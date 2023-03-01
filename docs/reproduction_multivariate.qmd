@@ -1,0 +1,2549 @@
+---
+title: "Optimal Transport for Counterfactual Estimation: A Method for Causal Inference"
+subtitle: "Online Appendix: reproduction of the results (multivariate case)"
+pdf-engine: lualatex
+fontsize: 9pt
+link-citations: true
+from: markdown+emoji
+author: 
+  - Arthur Charpentier
+  - Emmanuel Flachaire
+  - Ewen Gallic
+lang: en
+crossref:
+  title-delim: ". "
+toc: true
+format:
+  html:
+    code-fold: false
+    code-summary: "Show the R codes"
+    number-sections: true
+    html-math-method: mathjax
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+    include-in-header:
+      - assets/colors.tex
+fig-cap-location: top
+tbl-cap-location: top
+execute:
+  echo: true
+  cache: true
+bibliography: ../References/biblio.bib
+self-contained: true
+warning: false
+title-block-banner: true
+---
+
+```{r optn, echo=FALSE, include=TRUE, message=FALSE, warning=FALSE, cache=FALSE}
+library(tidyverse)
+library(wesanderson)
+library(car)
+library(transport)
+library(splines)
+library(mgcv)
+library(expm)
+library(tidyverse)
+
+colorize <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    
+    if(!str_detect(substitute(color), "^#")){
+      color <- deparse(substitute(color))
+    }
+    
+    sprintf("\\textcolor{%s}{%s}", color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'>%s</span>", color,
+      x)
+  } else x
+}
+
+library(wesanderson)
+colr1 <- wes_palette("Darjeeling1")
+colr2 <- wes_palette("Darjeeling2")
+couleur1 <- colr1[2] #00a389
+couleur2 <- colr1[4] #ff7c00
+couleur3 <- colr2[2] #006e9e
+coul1 <- colr1[1]
+coul2 <- colr1[3]
+
+CLR <- c(hcl.colors(16,palette="Blues"),rev(hcl.colors(16,palette="Reds")))
+col_neg <- CLR[10]
+col_pos <- CLR[24]
+```
+
+::: {.hidden}
+
+$$
+\usepackage{dsfont}
+\usepackage{xcolor}
+\require{mathtools}
+\definecolor{bayesred}{RGB}{147, 30, 24}
+\definecolor{bayesblue}{RGB}{32, 35, 91}
+\definecolor{bayesorange}{RGB}{218, 120, 1}
+\definecolor{grey}{RGB}{128, 128, 128}
+\definecolor{couleur1}{RGB}{0,163,137}
+\definecolor{couleur2}{RGB}{255,124,0}
+\definecolor{couleur3}{RGB}{0, 110, 158}
+\definecolor{coul1}{RGB}{255,37,0}
+\definecolor{coul2}{RGB}{242,173,0}
+\definecolor{col_neg}{RGB}{155, 191, 221}
+\definecolor{col_pos}{RGB}{255, 128, 106}
+{\color{bayesorange} P (\text{H} \mid \text{E})} = \frac
+{{\color{bayesred} P(\text{H})} \times 
+{\color{bayesblue}P(\text{E} \mid \text{H})}}
+{\color{grey} {P(\text{E})}}
+$$
+
+:::
+
+
+This online appendix provides R codes to apply the methods presented in the companion paper (@charpentier2023transport).
+
+# Data
+
+To illustrate the methods, we rely on the _Linked Birth/Infant Death Cohort Data_ (2013 cohort). The CSV files for the 2013 cohort were downloaded from the NBER collection of [Birth Cohort Linked Birth and Infant Death Data](http://www.cdc.gov/nchs/linked.htm) of the [National Vital Statistics System](http://www.cdc.gov/nchs/nvss.htm) of the [National Center for Health Statistics](http://www.cdc.gov/nchs/nvss.htm), on the [NBER](https://www.nber.org/research/data/linked-birthinfant-death-cohort-data) website. We formated the data (see [./births_stats.html](./births_stats.html)).
+
+Let us load the birth data.
+```{r}
+library(tidyverse)
+load("../data/births.RData")
+```
+
+Then, we can only keep a subsample of variables to illustrate the method.
+```{r}
+base <- 
+  births %>% 
+  mutate(
+    black_mother = mracerec == "Black",
+    nonnatural_delivery = rdmeth_rec != "Vaginal"
+  ) %>% 
+  select(
+    sex, dbwt, cig_rec, wtgain, 
+    black_mother, nonnatural_delivery,
+    mracerec, rdmeth_rec
+  ) %>% 
+  mutate(
+    cig_rec = replace_na(cig_rec, "Unknown or not stated"),
+    black_mother = ifelse(black_mother, yes = "Yes", no = "No"),
+    is_girl = ifelse(sex == "Female", yes = "Yes", no = "No")
+  ) %>% 
+  labelled::set_variable_labels(
+    black_mother = "Is the mother Black?",
+    is_girl = "Is the newborn a girl?",
+    nonnatural_delivery = "Is the delivery method non-natural?"
+  ) %>% 
+  rename(birth_weight = dbwt)
+base
+```
+
+The variables that were kept are the following:
+
+- `sex`: sex of the newborn
+- `birth_weight`: Birth Weight (in Grams)
+- `cig_rec`: mother smokes cigarettes
+- `wtgain`: mother weight gain
+- `mracerec`: mother's race
+- `black_mother`: is mother black?
+- `rdmeth_rec`: delivery method
+- `nonnatural_delivery`: is the delivery method non-natural?
+
+Then, let us discard individuals with missing values.
+
+```{r}
+base <- 
+  base %>% 
+  filter(
+    !is.na(birth_weight),
+    !is.na(wtgain),
+    !is.na(nonnatural_delivery),
+    !is.na(black_mother)
+  )
+```
+
+
+Let us define some colours for later use:
+```{r}
+library(wesanderson)
+colr1 <- wes_palette("Darjeeling1")
+colr2 <- wes_palette("Darjeeling2")
+couleur1 <- colr1[2]
+couleur2 <- colr1[4]
+couleur3 <- colr2[2]
+
+coul1 <- "#882255"
+coul2 <- "#DDCC77"
+```
+
+
+We need to load some packages.
+```{r}
+library(car)
+library(transport)
+library(splines)
+library(mgcv)
+library(expm)
+library(tidyverse)
+```
+
+
+Let us visualize a sample of the data using a scatter plot of $\boldsymbol{x} = (\text{wtgain}, \text{birth weight})$, conditional on the treatment $T$. For each value of the treatment, we will add to the scatter plot the iso-density curve such that 95\% of the points lie in the ellipse formed by the curve, assuming a Gaussian distribution for the mediator variables.
+
+
+```{r}
+set.seed(123)
+# A sample with only a few points
+base_s <- base[sample(1:nrow(base), size = 8000), ]
+```
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+The treatment variable $T$, (`cig_rec`) indicates whether the  `r colorize("mother smokes", couleur2)` $\color{couleur2}{t=1}$ `r colorize("or not", couleur1)` $\color{couleur1}{t=0}$.
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to iso-density curves"
+# Ellipse for smoker mothers
+E_C_Y <- dataEllipse(base_s$birth_weight[base_s$cig_rec=="Yes"], 
+                     base_s$wtgain[base_s$cig_rec=="Yes"],
+                     levels=0.9,draw = FALSE)
+# Ellipse for non-smoker mothers
+E_C_N <- dataEllipse(base_s$birth_weight[base_s$cig_rec=="No"],
+                     base_s$wtgain[base_s$cig_rec=="No"],
+                     levels=0.9,draw = FALSE)
+```
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Joint distributions of $\boldsymbol{X}$ (weight of the newborn infant and weight gain of the mother), conditional on the treatment T, when T indicates whether the mother is a <span style="color:#ff7c00">smoker</span> or <span style="color:#00a389">not</span>.
+#| label: fig-scatter-plot-smoker-ellipses
+plot(base_s$birth_weight[base_s$cig_rec=="Yes"],
+     base_s$wtgain[base_s$cig_rec=="Yes"],
+     col = yarrr::transparent(couleur1, trans.val = .9), pch = 19, 
+     main = "", xlab = "Weight of the baby (g)",
+     xlim = c(1800,4600), ylim = c(0,90),
+     ylab = "Weight gain of the mother (pounds)", axes = FALSE,cex=.3)
+axis(1)
+axis(2)
+points(base_s$birth_weight[base_s$cig_rec=="No"],
+       base_s$wtgain[base_s$cig_rec=="No"],
+       col = yarrr::transparent(couleur2, trans.val = .9), pch = 19, cex = .3)
+
+lines(E_C_N,col=couleur1,lwd=2)
+lines(E_C_Y,col=couleur2,lwd=2)
+
+legend("topleft",c("Smoker","Non-smoker"),lty=1,col=c(couleur2,couleur1),bty="n")
+```
+
+
+## $T$: Black mother
+
+The treatment variable $T$, (`black_mother`) indicates whether the  `r colorize("mother is Black", couleur2)` $\color{couleur2}{t=1}$ `r colorize("or not", couleur1)` $\color{couleur1}{t=0}$.
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to iso-density curves"
+# Ellipse for Black mothers
+E_C_Y_blacm <- dataEllipse(base_s$birth_weight[base_s$black_mother=="Yes"], 
+                     base_s$wtgain[base_s$black_mother=="Yes"],
+                     levels=0.9,draw = FALSE)
+# Ellipse for non-Black mothers
+E_C_N_blackm <- dataEllipse(base_s$birth_weight[base_s$black_mother=="No"],
+                     base_s$wtgain[base_s$black_mother=="No"],
+                     levels=0.9,draw = FALSE)
+```
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Joint distributions of $\boldsymbol{X}$ (weight of the newborn infant and weight gain of the mother), conditional on the treatment T, when T indicates whether the mother is <span style="color:#ff7c00">Black</span> or <span style="color:#00a389">not</span>.
+#| label: fig-scatter-plot-smoker-ellipses-blackmother
+plot(base_s$birth_weight[base_s$black_mother=="Yes"],
+     base_s$wtgain[base_s$black_mother=="Yes"],
+     col = yarrr::transparent(couleur1, trans.val = .9), pch = 19, 
+     main = "", xlab = "Weight of the baby (g)",
+     xlim = c(1600,4600), ylim = c(0,90),
+     ylab = "Weight gain of the mother (pounds)", axes = FALSE,cex=.3)
+axis(1)
+axis(2)
+points(base_s$birth_weight[base_s$black_mother=="No"],
+       base_s$wtgain[base_s$black_mother=="No"],
+       col = yarrr::transparent(couleur2, trans.val = .9), pch = 19, cex = .3)
+
+lines(E_C_N_blackm,col=couleur1,lwd=2)
+lines(E_C_Y_blacm,col=couleur2,lwd=2)
+
+legend("topleft",c("Black","Non-Black"),lty=1,col=c(couleur2,couleur1),bty="n")
+```
+
+## $T$: Baby Girl
+
+The treatment variable $T$, (`sex`) indicates whether the  `r colorize("baby is a girl", couleur2)` $\color{couleur2}{t=1}$ `r colorize("or not", couleur1)` $\color{couleur1}{t=0}$.
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to iso-density curves"
+# Ellipse for baby girls
+E_C_Y_sex <- dataEllipse(base_s$birth_weight[base_s$sex=="Female"], 
+                     base_s$wtgain[base_s$sex=="Female"],
+                     levels=0.9,draw = FALSE)
+# Ellipse for baby boys
+E_C_N_sex <- dataEllipse(base_s$birth_weight[base_s$sex=="Male"],
+                     base_s$wtgain[base_s$sex=="Male"],
+                     levels=0.9,draw = FALSE)
+```
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Joint distributions of $\boldsymbol{X}$ (weight of the newborn infant and weight gain of the mother), conditional on the treatment T, when T indicates whether the baby is <span style="color:#ff7c00">a girl</span> or <span style="color:#00a389">a boy</span>.
+#| label: fig-scatter-plot-smoker-ellipses-sex
+plot(base_s$birth_weight[base_s$sex=="Female"],
+     base_s$wtgain[base_s$sex=="Female"],
+     col = yarrr::transparent(couleur1, trans.val = .9), pch = 19, 
+     main = "", xlab = "Weight of the baby (g)",
+     xlim = c(1800,4600), ylim = c(0,90),
+     ylab = "Weight gain of the mother (pounds)", axes = FALSE,cex=.3)
+axis(1)
+axis(2)
+points(base_s$birth_weight[base_s$sex=="Male"],
+       base_s$wtgain[base_s$sex=="Male"],
+       col = yarrr::transparent(couleur2, trans.val = .9), pch = 19, cex = .3)
+
+lines(E_C_N_sex,col=couleur1,lwd=2)
+lines(E_C_Y_sex,col=couleur2,lwd=2)
+
+legend("topleft",c("Girl","Boy"),lty=1,col=c(couleur2,couleur1),bty="n")
+```
+
+
+:::
+
+# Objectives
+
+We would like to measure the effect of a treatment variable $T$ on the probability of observing a binary outcome $y$, depending on a binary treatment $T$. The outcome is assumed to depend on other variables $\boldsymbol{x}^m$ that are also influenced by the treatment; these variable are mediators.
+
+- Output ($y$, `nonnatural_delivery`): Probability of having a non-natural delivery
+- Treatment ($T$), either:
+
+    - `cig_rec`:  Whether the `r colorize("mother smokes", couleur2)` $\color{couleur2}{t=1}$ `r colorize("or not", couleur1)` $\color{couleur1}{t=0}$
+    - `black_mother`: Whether the `r colorize("mother is Black", couleur2)` $\color{couleur2}{t=1}$ `r colorize("or not", couleur1)` $\color{couleur1}{t=0}$
+    - `sex`: Whether the baby is `r colorize("a girl", couleur2)` $\color{couleur2}{t=1}$ `r colorize("or not", couleur1)` $\color{couleur1}{t=0}$
+- Mediator variables ($\boldsymbol{x}^m$, `birth_weight`): Birth weight of the newborn.
+
+
+| Variable | Name | Description |
+| :------- | :--- | :---------- |
+| Output ($y$) | `nonnatural_delivery`| Probability of having a non-natural delivery |
+| Treatment ($T$) | `cig_rec` | Whether the `r colorize("mother smokes", couleur2)` $\color{couleur2}{t=1}$ `r colorize("or not", couleur1)` $\color{couleur1}{t=0}$ |
+| Mediators ($\boldsymbol{x}^m$) | `birth_weight`, `wtgain` | Birth weight of the newborn, weight gain on the mother |
+
+::: {.callout-tip}
+
+
+## _Mutatis Mutandis_ $\text{CATE}(\boldsymbol{x})$, in the Multivariate Case
+
+
+The _Mutadis Mutandis_ CATE is given by:
+$$
+\color{couleur2}{m_1}\color{black}{}(\mathcal{T}(\boldsymbol{x}^m),\boldsymbol{x}^c,\not\!\boldsymbol{x}^p)-\color{couleur1}{m_0}\color{black}{}(\boldsymbol{x}^m,\boldsymbol{x}^c,\not\!\boldsymbol{x}^p),
+$$
+
+where $\boldsymbol{x}^c$ are collider (exogeneous) variables that influence $y$ but are not influenced by the treatment and $\not\!\boldsymbol{x}^p$ are confounding (noise, proxy) variables that are influenced by the treatment but do not influence $y$. As the latter are only correlated with $y$ (no causal relationship), they are excluded from $m(\cdot)$.
+
+**Gaussian Assumption**
+
+In the case where $\color{couleur2}{\boldsymbol{X}|t=1\sim\mathcal{N}(\boldsymbol{\mu}_1,\boldsymbol{\Sigma}_1)}$ and $\color{couleur1}{\boldsymbol{X}|t=0\sim\mathcal{N}(\boldsymbol{\mu}_0,\boldsymbol{\Sigma}_0)}$, there is an explicit expression for the optimal transport, which is simply an affine map (see @villani2003optimal for more details). In the univariate case, $\color{couleur2}{x_1}\color{black}{} = \mathcal{T}^\star_{\mathcal{N}}(\color{couleur1}{x_0}\color{black}{}) = \color{couleur2}{\mu_1}\color{black}{}+ \displaystyle{\frac{\color{couleur2}{\sigma_1}}{\color{couleur1}{\sigma_0}}(\color{couleur1}{x_0}\color{black}{}-\color{couleur1}{\mu_0}\color{black}{})}$, while in the multivariate case, an analogous expression can be derived:
+$$
+\color{couleur2}{\boldsymbol{x}_1}\color{black}{} = \mathcal{T}^\star_{\mathcal{N}}(\color{couleur1}{\boldsymbol{x}_0}\color{black}{})=\color{couleur2}{\boldsymbol{\mu}_1}\color{black}{} + \boldsymbol{A}(\color{couleur1}{\boldsymbol{x}_0}\color{black}{}-\color{couleur1}{\boldsymbol{\mu}_0}\color{black}{}),
+$$
+where $\boldsymbol{A}$ is a symmetric positive matrix that satisfies $\boldsymbol{A}\boldsymbol{\Sigma}_0\boldsymbol{A}=\boldsymbol{\Sigma}_1$, which has a unique solution given by $\boldsymbol{A}=\color{couleur1}{\boldsymbol{\Sigma}_0}^{\color{black}{-1/2}}\color{black}{}\big(\color{couleur1}{\boldsymbol{\Sigma}_0}^{\color{black}{1/2}}\color{couleur2}{\boldsymbol{\Sigma}_1}\color{couleur1}{\boldsymbol{\Sigma}_0}^{\color{black}{1/2}}\color{black}{}\big)^{1/2}\color{couleur1}{\boldsymbol{\Sigma}_0}^{\color{black}{-1/2}}$, where $\boldsymbol{M}^{1/2}$ is the square root of the square (symmetric) positive matrix $\boldsymbol{M}$ based on the Schur decomposition ($\boldsymbol{M}^{1/2}$ is a positive symmetric matrix), as described in @higham2008functions.
+
+:::
+
+
+::: {.callout-important}
+
+## What is Needed
+
+As in the univariate case, to estimate the _mutatis mutandis_ Sample Conditional Average Treatment Effect, the following are required:
+
+1. The two estimated models $\color{couleur1}{\widehat{m}_0(x)}$ and $\color{couleur2}{\widehat{m}_1(x)}$.
+2. A function to predict new values with these each of these two models.
+2. A transport method $\mathcal{T}(\cdot)$.
+
+
+:::
+
+
+We will compute the SCATE at the following values of $\boldsymbol{x}$:
+```{r}
+val_birth_weight <- seq(1800, 4600, length = 251)
+val_wtgain <- seq(0, 90, length = 251)
+val_grid <- expand.grid(wtgain = val_wtgain,  birth_weight = val_birth_weight) %>% as_tibble()
+val_grid
+```
+
+
+# Models
+
+
+Now, let us estimate $\color{couleur1}{\widehat{m}_0}$ and $\color{couleur2}{\widehat{m}_1}$ with a logistic GAM model (cubic spline first, then with more knots and degrees). To that end, we can define a function that will estimate both models and return them within a list.
+
+```{r}
+library(splines)
+
+#' Returns $\hat{m}_0()$ and $\hat{m}_1()$, using GAM
+#' @param target name of the target variable
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param x_m_names names of the mediator variable
+#' @param data data frame with the observations
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+#' @param df degrees of freedom (in the `bs()` function, deefault to `df=3`)
+models_spline <- function(target, treatment_name, x_m_names, data, treatment_0, treatment_1, df = 3){
+  
+  # \hat{m}_0()
+  formula_glm <- paste0(target, "~", paste0("bs(", x_m_names, ", df = ",df, ")", collapse = " + "))
+  reg_0 <- bquote(
+    glm(formula = .(formula_glm), data=data, family = binomial,
+        subset = (.(treatment_name) == .(treatment_0))),
+    list(
+      formula_glm = formula_glm,
+      treatment_name = as.name(treatment_name),
+      treatment_0 = treatment_0)
+  ) %>% eval()
+  # \hat{m}_1()
+  reg_1 <- bquote(
+    glm(formula = .(formula_glm), data=data, family = binomial,
+        subset = (.(treatment_name) == .(treatment_1))),
+    list(
+      formula_glm = formula_glm,
+      treatment_name = as.name(treatment_name),
+      treatment_1 = treatment_1)
+  ) %>% eval()
+  
+  list(reg_0 = reg_0, reg_1 = reg_1)
+}
+```
+
+
+## GAM (with cubic splines)
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+```
+
+$\color{couleur1}{\widehat{m}_0}$ and $\color{couleur2}{\widehat{m}_1}$:
+```{r reg-gam-smoker}
+reg_gam_smoker <- 
+  models_spline(target = target,
+              treatment_name = treatment_name, 
+              x_m_names = x_m_names,
+              data = base, treatment_0 = treatment_0, treatment_1 = treatment_1, df = c(3, 3))
+reg_gam_smoker_0 <- reg_gam_smoker$reg_0
+reg_gam_smoker_1 <- reg_gam_smoker$reg_1
+```
+
+## $T$: Black mother
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+```
+
+```{r reg-gam-blackm}
+reg_gam_blackm <- 
+  models_spline(target = target,
+              treatment_name = treatment_name, 
+              x_m_names = x_m_names,
+              data = base, treatment_0 = treatment_0, treatment_1 = treatment_1, df = c(3, 3))
+reg_gam_blackm_0 <- reg_gam_blackm$reg_0
+reg_gam_blackm_1 <- reg_gam_blackm$reg_1
+```
+
+
+## $T$: Baby girl
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+```
+
+$\color{couleur1}{\widehat{m}_0}$ and $\color{couleur2}{\widehat{m}_1}$:
+```{r reg-gam-sex}
+reg_gam_sex <- 
+  models_spline(target = target,
+              treatment_name = treatment_name, 
+              x_m_names = x_m_names,
+              data = base, treatment_0 = treatment_0, treatment_1 = treatment_1, df = c(3, 3))
+reg_gam_sex_0 <- reg_gam_sex$reg_0
+reg_gam_sex_1 <- reg_gam_sex$reg_1
+```
+
+
+:::
+
+
+## GAM (with more knots)
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+```
+
+$\color{couleur1}{\widehat{m}_0}$ and $\color{couleur2}{\widehat{m}_1}$:
+```{r reg-gam-2-smoker}
+reg_gam_2_smoker <- 
+  models_spline(target = target,
+              treatment_name = treatment_name, 
+              x_m_names = x_m_names,
+              data = base, treatment_0 = treatment_0, treatment_1 = treatment_1, df = c(12, 6))
+reg_gam_2_smoker_0 <- reg_gam_2_smoker$reg_0
+reg_gam_2_smoker_1 <- reg_gam_2_smoker$reg_1
+```
+
+## $T$: Black mother
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+```
+
+```{r reg-gam-2-blackm}
+reg_gam_2_blackm <- 
+  models_spline(target = target,
+              treatment_name = treatment_name, 
+              x_m_names = x_m_names,
+              data = base, treatment_0 = treatment_0, treatment_1 = treatment_1, df = c(12, 6))
+reg_gam_2_blackm_0 <- reg_gam_2_blackm$reg_0
+reg_gam_2_blackm_1 <- reg_gam_2_blackm$reg_1
+```
+
+
+## $T$: Baby girl
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+```
+
+$\color{couleur1}{\widehat{m}_0}$ and $\color{couleur2}{\widehat{m}_1}$:
+```{r reg-gam-2-sex}
+reg_gam_2_sex <- 
+  models_spline(target = target,
+              treatment_name = treatment_name, 
+              x_m_names = x_m_names,
+              data = base, treatment_0 = treatment_0, treatment_1 = treatment_1, df = c(12, 6))
+reg_gam_2_sex_0 <- reg_gam_2_sex$reg_0
+reg_gam_2_sex_1 <- reg_gam_2_sex$reg_1
+```
+
+:::
+
+
+# Prediction Functions
+
+## GAM
+
+The prediction function for GAM:
+```{r}
+#' @param object regression model (GAM)
+#' @param newdata data frame in which to look for the mediator variable used to predict the target
+model_spline_predict <- function(object, newdata){
+  predict(object, newdata = newdata, type="response")
+}
+```
+
+
+# Transport
+
+Let us now turn to the transport of the mediator variables.
+
+## Gaussian assumption
+
+We assume the mediator variables to be both Normally distributed. The parameters used to transport the mediator variables under the Gaussian assumption can be estimated thanks to the following function:
+```{r}
+#' Optimal Transport assuming Gaussian distribution for the mediator variables (helper function)
+#' @return A list with the mean and variance of the mediator in each subset, and the symmetric matrix A.
+#' @param target name of the target variable
+#' @param x_m_names vector of names of the mediator variables
+#' @param scale vector of scaling to apply to each `x_m_names` variable to transport (default to 1)
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+transport_gaussian_param <- function(target, x_m_names, scale=1, treatment_name, treatment_0, treatment_1){
+  base_0_unscaled <- 
+    base %>% 
+    select(!!c(x_m_names, treatment_name)) %>% 
+    filter(!!sym(treatment_name) ==  treatment_0)
+  base_1_unscaled <- 
+    base %>% 
+    select(!!c(x_m_names, treatment_name)) %>% 
+    filter(!!sym(treatment_name) ==  treatment_1)
+  
+  for(i in 1:length(scale)){
+    base_0_scaled <- 
+      base_0_unscaled %>% 
+      mutate(!!sym(x_m_names[i]) := !!sym(x_m_names[i]) * scale[i])
+    base_1_scaled <- 
+      base_1_unscaled %>% 
+      mutate(!!sym(x_m_names[i]) := !!sym(x_m_names[i]) * scale[i])
+  }
+  
+  # Mean in each subset (i.e., T=0, T=1)
+  m_0 <- base_0_scaled %>% summarise(across(!!x_m_names, mean)) %>% as_vector()
+  m_1 <- base_1_scaled %>% summarise(across(!!x_m_names, mean)) %>% as_vector()
+  # Variance
+  S_0 <- base_0_scaled %>% select(!!x_m_names) %>% var()
+  S_1 <- base_1_scaled %>% select(!!x_m_names) %>% var()
+  # Matrix A
+  A <- (solve(sqrtm(S_0))) %*% sqrtm( sqrtm(S_0) %*% S_1 %*% (sqrtm(S_0)) ) %*% solve(sqrtm(S_0))
+  
+  list(m_0 = m_0, m_1 = m_1, S_0 = S_0, S_1 = S_1, A = A, scale = scale, x_m_names = x_m_names)
+}
+```
+
+We create a function that transports a single observation, given the different parameters:
+```{r}
+#' Gaussian transport for a single observation (helper function)
+#' @param z vector of variables to transport (for a single observation)
+#' @param A symmetric positive matrix that satisfies \(A\sigma_0A=\sigma_1\)
+#' @param m_0,m_1 vectors of mean values in the subsets \(\mathcal{D}_0\) and \(\mathcal{D}_1\)
+#' @param scale vector of scaling to apply to each variable to transport (default to 1)
+T_C_single <- function(z, A, m_0, m_1, scale = 1){
+  z <- z*scale
+  as.vector(m_1 + A %*% (z-m_0))*(1/scale)
+}
+```
+
+
+Lastly, we define a function that transports the mediator variables, under the Gaussian assumption. If the `params` argument is `NULL`{.R}, the arguments needed to estimate them through the `transport_gaussian_param()` function are required (`target`, `x_m_names`, `treatment_name`, `treatment_0`, `treatment_1`).
+```{r}
+#' Gaussian transport
+#' @param z data frame of variables to transport
+#' @param params (optional) parameters to use for the transport (result of `transport_gaussian_param()`, default to NULL)
+#' @param target name of the target variable
+#' @param x_m_names vector of names of the mediator variables
+#' @param scale vector of scaling to apply to each `x_m_names` variable to transport (default to 1)
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+gaussian_transport <- function(z, params = NULL, ..., x_m_names, scale, treatment_name, treatment_0, treatment_1){
+  if(is.null(params)){
+    # If the parameters of the transport function are not provided
+    # they need to be computed first
+    params <- 
+      transport_gaussian_param(target = target, x_m_names = x_m_names, 
+                               scale = scale, treatment_name = treatment_name, 
+                               treatment_0 = treatment_0, treatment_1 = treatment_1)
+  }
+  A <- params$A
+  m_0 <- params$m_0 ; m_1 <- params$m_1
+  scale <- params$scale
+  x_m_names <- params$x_m_names
+  
+  values_to_transport <- z %>% select(!!x_m_names)
+  transported_val <- 
+    apply(values_to_transport, 1, T_C_single, A = A, m_0 = m_0, m_1 = m_1,
+          scale = scale, simplify = FALSE) %>% 
+    do.call("rbind", .)
+  colnames(transported_val) <- colnames(z)
+  transported_val <- as_tibble(transported_val)
+  
+  structure(.Data = transported_val, params = params)
+}
+```
+
+The transported values:
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+```
+
+```{r transported-val-N-smoker}
+val_grid_t_n_smoker <- 
+  gaussian_transport(z = val_grid, target = target,
+                     x_m_names = x_m_names, 
+                     scale = scale, treatment_name = treatment_name,
+                     treatment_0 = treatment_0, treatment_1 = treatment_1)
+val_grid_t_n_smoker
+```
+
+## $T$: Black mother
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+```
+
+```{r transported-val-N-blackm}
+val_grid_t_n_blackm <- 
+  gaussian_transport(z = val_grid, target = target,
+                     x_m_names = x_m_names, 
+                     scale = scale, treatment_name = treatment_name,
+                     treatment_0 = treatment_0, treatment_1 = treatment_1)
+val_grid_t_n_blackm
+```
+
+
+## $T$: Baby girl
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+```
+
+```{r transported-val-N-sex}
+val_grid_t_n_sex <- 
+  gaussian_transport(z = val_grid, target = target,
+                     x_m_names = x_m_names, 
+                     scale = scale, treatment_name = treatment_name,
+                     treatment_0 = treatment_0, treatment_1 = treatment_1)
+val_grid_t_n_sex
+```
+
+
+:::
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+The estimated parameters can be extracted as follows:
+```{r}
+params_smoker <- attr(val_grid_t_n_smoker, "params")
+params_smoker
+```
+
+## $T$: Black mother
+
+The estimated parameters can be extracted as follows:
+```{r}
+params_blackm <- attr(val_grid_t_n_blackm, "params")
+params_blackm
+```
+
+## $T$: Baby girl
+
+The estimated parameters can be extracted as follows:
+```{r}
+params_sex <- attr(val_grid_t_n_sex, "params")
+params_sex
+```
+
+:::
+
+
+Let us now consider four different individuals $\boldsymbol{x}$ in the control group:
+
+```{r}
+individuals <- 
+  tibble(birth_weight = c(2584, 2584, 4152, 4152), wtgain = c(10.8, 46.8, 10.8, 46.8))
+
+individuals_trans <- 
+  individuals %>% bind_cols(
+    gaussian_transport(z = individuals, params = params_smoker) %>% 
+      rename_all(~paste0(., "_t")) %>% 
+      mutate(target = "smoker")) %>%
+  bind_rows(
+    individuals %>% bind_cols(
+      gaussian_transport(z = individuals, params = params_blackm) %>% 
+        rename_all(~paste0(., "_t")) %>% 
+        mutate(target = "black")
+    )
+  ) %>% 
+  bind_rows(
+    individuals %>% bind_cols(
+      gaussian_transport(z = individuals, params = params_sex) %>% 
+        rename_all(~paste0(., "_t")) %>% 
+        mutate(target = "girl")
+    )
+  )
+```
+
+```{r}
+#| label: tbl-bivariate-optimal-transport-n
+#| tbl-cap: Bivariate optimal transport, $\boldsymbol{x}\mapsto \mathcal{T}_{\mathcal{N}}(\boldsymbol{x})$, for the three treatments, for four different individuals $\boldsymbol{x}$ in the control group.
+individuals_trans %>% 
+  pivot_wider(names_from = target, values_from = c(birth_weight_t, wtgain_t)) %>% 
+  relocate(paste0(rep(c("birth_weight_t_", "wtgain_t_"), 3), rep(c("smoker", "black", "girl"), each = 2)), .after = wtgain) %>% 
+  rename_with(~str_replace(., "birth_weight_t", "bw"), contains("birth_weight_t")) %>% 
+  rename_with(~str_replace(., "wtgain_t", "wg"), contains("wtgain_t")) %>% 
+  knitr::kable(format = "html", digits = 1) %>% 
+  kableExtra::kable_classic(full_width = F, html_font = "Cambria") %>%
+  kableExtra::add_header_above(c(" "=2, "Smoker" = 2, "Black" = 2, "Girl" = 2))
+```
+
+
+
+
+
+### Vector Field
+
+Let us visualize on a plot the transported values for some points, using arrows. For each point, the origin of an arrow corresponds to $\boldsymbol{x} = (\text{birth weight}, \text{weight gain})$, while its end corresponds to $\mathcal{T}_\mathcal{N} (\boldsymbol{x})$.
+```{r}
+# To draw arrows that changes color from start to end: code from Greg Snow
+# Source: https://stackoverflow.com/a/20430004
+csa <- function(x1, y1, x2, y2, first_col,second_col, length = .035, ...) {
+  cols <- colorRampPalette( c(first_col,second_col) )(250)
+  x <- approx(c(0,1),c(x1,x2), xout=seq(0,1,length.out=251))$y
+  y <- approx(c(0,1),c(y1,y2), xout=seq(0,1,length.out=251))$y
+  
+  arrows(x[250],y[250],x[251],y[251], col=cols[250], length = length, ...)
+  segments(x[-251],y[-251],x[-1],y[-1],col=cols, ...)
+  
+}
+color.scale.arrow <- Vectorize(csa, c('x1','y1','x2','y2') )
+```
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Vector field associated with optimal Gaussian transport, in dimension two (weight of the newborn infant and weight gain of the mother) from <span style="color:#00a389">non-smoker</span> to <span style="color:#ff7c00">smoker</span> mother.
+#| label: fig-arrow-plot-smoker-birthweight-weightgain-smoker
+image(val_birth_weight, val_wtgain, matrix(0, length(val_wtgain), length(val_birth_weight), byrow = TRUE),
+      xlab = "",
+      ylab = "Weight gain of the mother",
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600), col = "white")
+
+mtext(expression("Weight of the baby (mother " * phantom("non-smoker") * " → " * phantom("smoker") *")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (mother ") * "non-smoker" * phantom(" → smoker)")),
+      side=1,line=3, col = couleur1)
+mtext(expression(phantom("Weight of the baby (mother non-smoker → ") * "smoker" * phantom(")")),
+      side=1,line=3, col = couleur2)
+axis(1)
+axis(2)
+rect(1800,0,4600,90)
+for(i in seq(11,251,by=20)){
+  for(j in seq(11,251,by=20)){
+    z <- gaussian_transport(z = tibble(wtgain = val_wtgain[j], birth_weight = val_birth_weight[i]),
+                            params = params_smoker)
+    
+    csa(x1 = val_birth_weight[i], y1 = val_wtgain[j], x2 = z$birth_weight, y2 = z$wtgain, 
+        first_col = couleur1, second_col = couleur2, lwd = 2)
+  }}
+```
+
+## $T$: Black mother
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Vector field associated with optimal Gaussian transport, in dimension two (weight of the newborn infant and weight gain of the mother), from <span style="color:#00a389">non-Black</span> to <span style="color:#ff7c00">Black</span> mother.
+#| label: fig-arrow-plot-smoker-birthweight-weightgain-blackm
+image(val_birth_weight, val_wtgain, matrix(0, length(val_wtgain), length(val_birth_weight), byrow = TRUE),
+      xlab = "",
+      ylab = "Weight gain of the mother",
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600), col = "white")
+
+mtext(expression("Weight of the baby (" * phantom("non-Black") * " → " * phantom("Black") *" mother)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "non-Black" * phantom(" → Black mother)")),
+      side=1,line=3, col = couleur1)
+mtext(expression(phantom("Weight of the baby (non-Black → ") * "Black" * phantom(" mother)")),
+      side=1,line=3, col = couleur2)
+axis(1)
+axis(2)
+rect(1800,0,4600,90)
+for(i in seq(11,251,by=20)){
+  for(j in seq(11,251,by=20)){
+    z <- gaussian_transport(z = tibble(wtgain = val_wtgain[j], birth_weight = val_birth_weight[i]),
+                            params = params_blackm)
+    
+    csa(x1 = val_birth_weight[i], y1 = val_wtgain[j], x2 = z$birth_weight, y2 = z$wtgain, 
+        first_col = couleur1, second_col = couleur2, lwd = 2)
+  }}
+```
+
+## $T$: Baby girl
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Vector field associated with optimal Gaussian transport, in dimension two (weight of the newborn infant and weight gain of the mother), from <span style="color:#00a389">baby boy</span> to <span style="color:#ff7c00">baby girl</span> mother.
+#| label: fig-arrow-plot-smoker-birthweight-weightgain-sex
+image(val_birth_weight, val_wtgain, matrix(0, length(val_wtgain), length(val_birth_weight), byrow = TRUE),
+      xlab = "",
+      ylab = "Weight gain of the mother",
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600), col = "white")
+
+mtext(expression("Weight of the baby (" * phantom("baby boy") * " → " * phantom("baby girl") *")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby boy" * phantom(" → baby girl)")),
+      side=1,line=3, col = couleur1)
+mtext(expression(phantom("Weight of the baby (baby boy → ") * "baby girl" * phantom(")")),
+      side=1,line=3, col = couleur2)
+axis(1)
+axis(2)
+rect(1800,0,4600,90)
+for(i in seq(11,251,by=20)){
+  for(j in seq(11,251,by=20)){
+    z <- gaussian_transport(z = tibble(wtgain = val_wtgain[j], birth_weight = val_birth_weight[i]),
+                            params = params_sex)
+    
+    csa(x1 = val_birth_weight[i], y1 = val_wtgain[j], x2 = z$birth_weight, y2 = z$wtgain, 
+        first_col = couleur1, second_col = couleur2, lwd = 2)
+  }}
+```
+
+:::
+
+
+# Estimation
+
+Now that the two models $\color{couleur1}{\widehat{m}_0(x)}$ and $\color{couleur2}{\widehat{m}_1(x)}$ are defined and fitted to the data, we can compute the _Mutatis Mutandis_ Sample Conditional Average Effect.
+
+```{r}
+#' Computes the Sample Average Treatment Effect with and without transport
+#' @param x_0 vector of values at which to compute $\hat{m}_0(x_0)$, $\hat{m}_1(x_0)$
+#' @param x_t vector of values at which to compute $\hat{m}_1(\mathcal{T}(x_t))$
+#' @param x_m_name vector of names of the mediator variables
+#' @param mod_0 model $\hat{m}_0$
+#' @param mod_1 model $\hat{m}_1$
+#' @param pred_mod_0 prediction function for model $\hat{m}_0(\cdot)$
+#' @param pred_mod_1 prediction function for model $\hat{m}_1(\cdot)$
+#' @param return_x if `TRUE` (default) the mediator variables are returned in the table, as well as their transported values
+sate <- function(x_0, x_t, x_m_names, mod_0, mod_1, pred_mod_0, pred_mod_1, return_x = TRUE){
+  if(is.vector(x_0)){
+    # Univariate case
+    new_data <- tibble(!!x_m_names := x_0)
+  }else{
+    new_data <- x_0
+  }
+  if(is.vector(x_t)){
+    # Univariate case
+    new_data_t <- tibble(!!x_m_names := x_t)
+  }else{
+    new_data_t <- x_t
+  }
+  
+  
+  # $\hat{m}_0(x_0)$
+  y_0 <- pred_mod_0(object = mod_0, newdata = new_data)
+  # $\hat{m}_1(x_0)$
+  y_1 <- pred_mod_1(object = mod_1, newdata = new_data)
+  # $\hat{m}_1(\mathcal{T}(x_0))$
+  y_1_t <- pred_mod_1(object = mod_1, newdata = new_data_t)
+  
+  
+  scate_tab <- 
+    tibble(y_0 = y_0, y_1 = y_1, y_1_t = y_1_t,
+         CATE = y_1-y_0, SCATE = y_1_t-y_0)
+  
+  if(return_x){
+    new_data_t <- new_data_t %>% rename_all(~paste0(.x, "_t"))
+    scate_tab <- bind_cols(new_data, new_data_t, scate_tab)
+  }
+  scate_tab
+}
+```
+
+## GAM (with cubic splines), Gaussian assumption for transport
+
+Let us compute here the SCATE where the models $\color{couleur1}{\widehat{m}_0(x)}$ and $\color{couleur2}{\widehat{m}_1(x)}$ are GAM and where the transport method assumes a Gaussian distribution for both mediators.
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+```{r}
+mm_sate_gam_smoker <- 
+  sate(
+    x_0 = val_grid,
+    x_t = val_grid_t_n_smoker,
+    x_m_names = c("wtgain", "birth_weight"),
+    mod_0 = reg_gam_smoker_0,
+    mod_1 = reg_gam_smoker_1,
+    pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict,
+    return = TRUE)
+mm_sate_gam_smoker
+```
+
+## $T$: Black mother
+
+```{r}
+mm_sate_gam_blackm <- 
+  sate(
+    x_0 = val_grid,
+    x_t = val_grid_t_n_blackm,
+    x_m_names = c("wtgain", "birth_weight"),
+    mod_0 = reg_gam_blackm_0,
+    mod_1 = reg_gam_blackm_1,
+    pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict,
+    return = TRUE)
+mm_sate_gam_blackm
+```
+
+## $T$: Baby girl
+
+```{r}
+mm_sate_gam_sex <- 
+  sate(
+    x_0 = val_grid,
+    x_t = val_grid_t_n_sex,
+    x_m_names = c("wtgain", "birth_weight"),
+    mod_0 = reg_gam_sex_0,
+    mod_1 = reg_gam_sex_1,
+    pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict,
+    return = TRUE)
+mm_sate_gam_sex
+```
+
+:::
+
+
+## GAM (with more knots), Gaussian assumption for transport
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+```{r mm-sate-gam-2-smoker}
+mm_sate_gam_2_smoker <- 
+  sate(
+    x_0 = val_grid,
+    x_t = val_grid_t_n_smoker,
+    x_m_names = c("wtgain", "birth_weight"),
+    mod_0 = reg_gam_2_smoker_0,
+    mod_1 = reg_gam_2_smoker_1,
+    pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict,
+    return = TRUE)
+mm_sate_gam_2_smoker
+```
+
+## $T$: Black mother
+
+```{r mm-sate-gam-2-blackm}
+mm_sate_gam_2_blackm <- 
+  sate(
+    x_0 = val_grid,
+    x_t = val_grid_t_n_blackm,
+    x_m_names = c("wtgain", "birth_weight"),
+    mod_0 = reg_gam_2_blackm_0,
+    mod_1 = reg_gam_2_blackm_1,
+    pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict,
+    return = TRUE)
+mm_sate_gam_2_blackm
+```
+
+## $T$: Baby girl
+
+```{r mm-sate-gam-2-sex}
+mm_sate_gam_2_sex <- 
+  sate(
+    x_0 = val_grid,
+    x_t = val_grid_t_n_sex,
+    x_m_names = c("wtgain", "birth_weight"),
+    mod_0 = reg_gam_2_sex_0,
+    mod_1 = reg_gam_2_sex_1,
+    pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict,
+    return = TRUE)
+mm_sate_gam_2_sex
+```
+
+:::
+
+# Results
+
+## GAM (with cubic splines), Gaussian assumption for transport
+
+### Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=0]$
+
+Now, we can plot some level curves to visualize the estimated probabilities of the target variable at different points in the 2-dimensional space in which the mediator lie. Let us focus on the sub-sample of the non-treated.
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+```{r}
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+
+mat_gam_0_smoker <- matrix(mm_sate_gam_smoker$y_0, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_1_smoker <- matrix(mm_sate_gam_smoker$y_1, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_1_t_smoker <- matrix(mm_sate_gam_smoker$y_1_t, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+```
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=0]$, with $T=0$ indicating a <span style="color:#00a389">non-smoker mother</span>, estimated with logistic GAM models (cubic splines).
+#| label: fig-CATE-biv-GAM-1-contour-non-smoker
+image(val_birth_weight, val_wtgain, mat_gam_0_smoker,
+      axes = FALSE, xlab = "", ylab = "", ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("non-smoker mother") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "non-smoker mother" * phantom(")")),
+      side=1,line=3, col = couleur1)
+mtext(expression("Weight gain of the mother (" * phantom("non-smoker") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "non-smoker" * phantom(")")),
+      side=2, line=3, col = couleur1)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_0_smoker, add=TRUE)
+```
+## $T$: Black mother
+
+```{r}
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+
+mat_gam_0_blackm <- matrix(mm_sate_gam_blackm$y_0, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_1_blackm <- matrix(mm_sate_gam_blackm$y_1, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_1_t_blackm <- matrix(mm_sate_gam_blackm$y_1_t, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+```
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=0]$, with $T=0$ indicating a <span style="color:#00a389">non-Black mother</span>, estimated with logistic GAM models (cubic splines).
+#| label: fig-CATE-biv-GAM-1-contour-non-Black
+image(val_birth_weight, val_wtgain, mat_gam_0_blackm,
+      axes = FALSE, xlab = "", ylab = "", ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("non-Black mother") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "non-Black mother" * phantom(")")),
+      side=1,line=3, col = couleur1)
+mtext(expression("Weight gain of the mother (" * phantom("non-Black") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "non-Black" * phantom(")")),
+      side=2, line=3, col = couleur1)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_0_blackm, add=TRUE)
+```
+
+
+## $T$: Baby girl
+
+```{r}
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+
+mat_gam_0_sex <- matrix(mm_sate_gam_sex$y_0, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_1_sex <- matrix(mm_sate_gam_sex$y_1, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_1_t_sex <- matrix(mm_sate_gam_sex$y_1_t, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+```
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=0]$, with $T=0$ indicating a <span style="color:#00a389">baby boy</span>, estimated with logistic GAM models (cubic splines).
+#| label: fig-CATE-biv-GAM-1-contour-sex-male
+image(val_birth_weight, val_wtgain, mat_gam_0_sex,
+      axes = FALSE, xlab = "", ylab = "", ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("baby boy") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby boy" * phantom(")")),
+      side=1,line=3, col = couleur1)
+mtext(expression("Weight gain of the mother (" * phantom("baby boy") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "baby boy" * phantom(")")),
+      side=2, line=3, col = couleur1)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_0_sex, add=TRUE)
+```
+
+
+:::
+
+### Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=1]$
+
+Let us focus now on the sub-sample of the treated.
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=1]$, with $T=1$ indicating a <span style="color:#ff7c00">smoker mother</span>, estimated with logistic GAM models (cubic splines).
+#| label: fig-CATE-biv-GAM-1-contour-smoker
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_1_smoker,
+      xlab = "", ylab = "", axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("smoker mother") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "smoker mother" * phantom(")")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("smoker") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "smoker" * phantom(")")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_smoker, add=TRUE)
+```
+
+
+## $T$: Black mother
+
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=1]$, with $T=1$ indicating a <span style="color:#ff7c00">Black mother</span>, estimated with logistic GAM models (cubic splines).
+#| label: fig-CATE-biv-GAM-1-contour-blackm
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_1_blackm,
+      xlab = "", ylab = "", axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("Black mother") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "Black mother" * phantom(")")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("Black") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "Black" * phantom(")")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_blackm, add=TRUE)
+```
+
+## $T$: Baby girl
+
+When the treatment $T$ indicates that the baby is `r colorize("mother is a girl", couleur2)`:
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=1]$, with $T=1$ indicating a <span style="color:#ff7c00">baby girl</span>, estimated with logistic GAM models (cubic splines).
+#| label: fig-CATE-biv-GAM-1-contour-sex
+
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+image(val_birth_weight, val_wtgain, mat_gam_1_sex,
+      xlab = "", ylab = "", axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("baby girl") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby girl" * phantom(")")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("baby girl") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "baby girl" * phantom(")")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_sex, add=TRUE)
+```
+
+:::
+
+### Contours of the _ceteris paribus_ \\(\\boldsymbol{x}\\mapsto\\text{CATE}[\\boldsymbol{x}]\\) without any transport
+
+
+Now, we can turn to the estimation of the treatment effect. We will fist compute the CATE without any transport, and then present the _Mutatis Mutandis_ SCATE.
+
+Let us create a palette of colors ranging from dark blue to dark red.
+```{r}
+nb_colors <- 18
+CLR <- c(hcl.colors(nb_colors, palette = "Blues"), rev(hcl.colors(nb_colors, palette = "Reds")))
+```
+
+
+::: {.panel-tabset}
+
+
+## $T$: Smoker mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _ceteris paribus_ \\(\\boldsymbol{x}\\mapsto\\text{CATE}[\\boldsymbol{x}]\\) without any transport.
+#| label: fig-CATE-cet-par-biv-GAM-1-contour-without-transport-smoker
+
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_1_smoker-mat_gam_0_smoker,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("smoker mother") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "smoker mother" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("smoker") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "smoker" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_smoker-mat_gam_0_smoker, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+## $T$: Black mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _ceteris paribus_ \\(\\boldsymbol{x}\\mapsto\\text{CATE}[\\boldsymbol{x}]\\) without any transport.
+#| label: fig-CATE-cet-par-biv-GAM-1-contour-without-transport-blackm
+
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_1_blackm - mat_gam_0_blackm,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("Black mother") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "Black mother" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("Black") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "Black" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_blackm-mat_gam_0_blackm, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+
+## $T$: Baby girl
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _ceteris paribus_ \\(\\boldsymbol{x}\\mapsto\\text{CATE}[\\boldsymbol{x}]\\) without any transport.
+#| label: fig-CATE-cet-par-biv-GAM-1-contour-without-transport-sex
+
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+image(val_birth_weight, val_wtgain, mat_gam_1_sex - mat_gam_0_sex,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("baby girl") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby girl" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("girl") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "girl" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_sex-mat_gam_0_sex, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+:::
+
+
+
+### Contours of the _mutatis mutandis_ $\boldsymbol{x}\mapsto\text{SCATE}[\boldsymbol{x}]$.
+
+
+::: {.panel-tabset}
+
+
+## $T$: Smoker mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _mutatis mutandis_ \\(\\boldsymbol{x}\\mapsto\\text{SCATE}[\\boldsymbol{x}]\\).
+#| label: fig-CATE-mutatis-mutandis-biv-GAM-1-contour-with-transport-smoker
+
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_1_t_smoker-mat_gam_0_smoker,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("smoker mother") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "smoker mother" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("smoker") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "smoker" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_t_smoker-mat_gam_0_smoker, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+
+## $T$: Black mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _mutatis mutandis_ \\(\\boldsymbol{x}\\mapsto\\text{SCATE}[\\boldsymbol{x}]\\).
+#| label: fig-CATE-mutatis-mutandis-biv-GAM-1-contour-with-transport-black
+
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_1_t_blackm-mat_gam_0_blackm,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("Black mother") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "Black mother" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("Black") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "Black" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_t_blackm-mat_gam_0_blackm, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+## $T$: Baby girl
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _mutatis mutandis_ \\(\\boldsymbol{x}\\mapsto\\text{SCATE}[\\boldsymbol{x}]\\).
+#| label: fig-CATE-mutatis-mutandis-biv-GAM-1-contour-with-transport-sex
+
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+image(val_birth_weight, val_wtgain, mat_gam_1_t_sex-mat_gam_0_sex,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("baby girl") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby girl" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("girl") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "girl" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_t_sex-mat_gam_0_sex, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+:::
+
+
+### Positive vs negative CATE: boundaries, without transport
+
+We can graph a `r colorize("positive", col_pos)`/`r colorize("negative", col_neg)` distinction for the conditional average treatment effect (`r colorize("positive is red", col_pos)`, `r colorize("negative is blue", col_neg)`). 
+
+::: {.panel-tabset}
+
+
+## $T$: Smoker mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect, without transport.
+#| label: fig-CATE-biv-GAM-1-pos-neg-contour-no-transport-smoker
+
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_1_smoker-mat_gam_0_smoker,
+      xlab = "",
+      ylab = "", 
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("smoker mother") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "smoker mother" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("smoker") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "smoker" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_smoker-mat_gam_0_smoker,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+
+## $T$: Black mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect, without transport.
+#| label: fig-CATE-biv-GAM-1-pos-neg-contour-no-transport-blackm
+
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_1_blackm-mat_gam_0_blackm,
+      xlab = "",
+      ylab = "", 
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("Black mother") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "Black mother" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("Black") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "Black" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_blackm-mat_gam_0_blackm,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+
+## $T$: Baby girl
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect, without transport.
+#| label: fig-CATE-biv-GAM-1-pos-neg-contour-no-transport-sex
+
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+image(val_birth_weight, val_wtgain, mat_gam_1_sex-mat_gam_0_sex,
+      xlab = "",
+      ylab = "", 
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("baby girl") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby girl" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("girl") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "girl" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_sex-mat_gam_0_sex,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+:::
+
+### Positive vs negative CATE: boundaries, with transport
+
+::: {.panel-tabset}
+
+
+## $T$: Smoker mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect, with transport.
+#| label: fig-CATE-biv-GAM-1-pos-neg-contour-smoker
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_1_t_smoker-mat_gam_0_smoker,
+      xlab = "",
+      ylab = "",
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("smoker mother") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "smoker mother" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("smoker") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "smoker" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_t_smoker-mat_gam_0_smoker,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+
+## $T$: Black mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect, with transport.
+#| label: fig-CATE-biv-GAM-1-pos-neg-contour-blackm
+
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_1_t_blackm-mat_gam_0_blackm,
+      xlab = "",
+      ylab = "",
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("Black mother") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "Black mother" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("Black") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "Black" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_t_blackm-mat_gam_0_blackm,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+
+## $T$: Baby girl
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect, with transport.
+#| label: fig-CATE-biv-GAM-1-pos-neg-contour-sex
+
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+image(val_birth_weight, val_wtgain, mat_gam_1_t_sex-mat_gam_0_sex,
+      xlab = "",
+      ylab = "",
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("baby girl") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby girl" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("girl") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "girl" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_1_t_sex-mat_gam_0_sex,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+:::
+
+
+## GAM (with more knots), Gaussian assumption for transport
+
+
+### Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=0]$
+
+Now, we can plot some level curves to visualize the estimated probabilities of the target variable at different points in the 2-dimensional space in which the mediator lie. Let us focus on the sub-sample of the non-treated.
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+```{r}
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+
+mat_gam_2_0_smoker <- matrix(mm_sate_gam_2_smoker$y_0, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_2_1_smoker <- matrix(mm_sate_gam_2_smoker$y_1, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_2_1_t_smoker <- matrix(mm_sate_gam_2_smoker$y_1_t, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+```
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=0]$, with $T=0$ indicating a <span style="color:#00a389">non-smoker mother</span>, estimated with logistic GAM models (cubic splines, with more knots).
+#| label: fig-CATE-biv-GAM-2-contour-non-smoker
+image(val_birth_weight, val_wtgain, mat_gam_2_0_smoker,
+      axes = FALSE, xlab = "", ylab = "", ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("non-smoker mother") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "non-smoker mother" * phantom(")")),
+      side=1,line=3, col = couleur1)
+mtext(expression("Weight gain of the mother (" * phantom("non-smoker") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "non-smoker" * phantom(")")),
+      side=2, line=3, col = couleur1)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_0_smoker, add=TRUE)
+```
+## $T$: Black mother
+
+```{r}
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+
+mat_gam_2_0_blackm <- matrix(mm_sate_gam_2_blackm$y_0, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_2_1_blackm <- matrix(mm_sate_gam_2_blackm$y_1, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_2_1_t_blackm <- matrix(mm_sate_gam_2_blackm$y_1_t, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+```
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=0]$, with $T=0$ indicating a <span style="color:#00a389">non-Black mother</span>, estimated with logistic GAM models (cubic splines, with more knots).
+#| label: fig-CATE-biv-GAM-2-contour-non-Black
+image(val_birth_weight, val_wtgain, mat_gam_2_0_blackm,
+      axes = FALSE, xlab = "", ylab = "", ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("non-Black mother") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "non-Black mother" * phantom(")")),
+      side=1,line=3, col = couleur1)
+mtext(expression("Weight gain of the mother (" * phantom("non-Black") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "non-Black" * phantom(")")),
+      side=2, line=3, col = couleur1)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_0_blackm, add=TRUE)
+```
+
+
+## $T$: Baby girl
+
+```{r}
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+
+mat_gam_2_0_sex <- matrix(mm_sate_gam_2_sex$y_0, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_2_1_sex <- matrix(mm_sate_gam_2_sex$y_1, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+mat_gam_2_1_t_sex <- matrix(mm_sate_gam_2_sex$y_1_t, length(val_wtgain), length(val_birth_weight), byrow = TRUE)
+```
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=0]$, with $T=0$ indicating a <span style="color:#00a389">baby boy</span>, estimated with logistic GAM models (cubic splines, with more knots).
+#| label: fig-CATE-biv-GAM-2-contour-sex-male
+image(val_birth_weight, val_wtgain, mat_gam_2_0_sex,
+      axes = FALSE, xlab = "", ylab = "", ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("baby boy") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby boy" * phantom(")")),
+      side=1,line=3, col = couleur1)
+mtext(expression("Weight gain of the mother (" * phantom("baby boy") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "baby boy" * phantom(")")),
+      side=2, line=3, col = couleur1)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_0_sex, add=TRUE)
+```
+
+
+:::
+
+### Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=1]$
+
+Let us focus now on the sub-sample of the treated.
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=1]$, with $T=1$ indicating a <span style="color:#ff7c00">smoker mother</span>, estimated with logistic GAM models (cubic splines, with more knots).
+#| label: fig-CATE-biv-GAM-2-contour-smoker
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_smoker,
+      xlab = "", ylab = "", axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("smoker mother") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "smoker mother" * phantom(")")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("smoker") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "smoker" * phantom(")")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_smoker, add=TRUE)
+```
+
+
+## $T$: Black mother
+
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=1]$, with $T=1$ indicating a <span style="color:#ff7c00">Black mother</span>, estimated with logistic GAM models (cubic splines, with more knots).
+#| label: fig-CATE-biv-GAM-2-contour-blackm
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_blackm,
+      xlab = "", ylab = "", axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("Black mother") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "Black mother" * phantom(")")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("Black") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "Black" * phantom(")")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_blackm, add=TRUE)
+```
+
+## $T$: Baby girl
+
+When the treatment $T$ indicates that the baby is `r colorize("mother is a girl", couleur2)`:
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of $\boldsymbol{x}\mapsto\mathbb{E}[Y|\boldsymbol{X}=\boldsymbol{x},T=1]$, with $T=1$ indicating a <span style="color:#ff7c00">baby girl</span>, estimated with logistic GAM models (cubic splines, with more knots).
+#| label: fig-CATE-biv-GAM-2-contour-sex
+
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_sex,
+      xlab = "", ylab = "", axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = hcl.colors(20, "YlOrRd", rev = TRUE), breaks=(0:20)/20)
+mtext("Weight of the baby (quantile)",side=3,line=3)
+mtext(expression("Weight of the baby (" * phantom("baby girl") * ")"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby girl" * phantom(")")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("baby girl") * ")"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "baby girl" * phantom(")")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_1],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_sex, add=TRUE)
+```
+
+:::
+
+### Contours of the _ceteris paribus_ \\(\\boldsymbol{x}\\mapsto\\text{CATE}[\\boldsymbol{x}]\\) without any transport
+
+
+Now, we can turn to the estimation of the treatment effect. We will fist compute the CATE without any transport, and then present the _Mutatis Mutandis_ SCATE.
+
+Let us create a palette of colors ranging from dark blue to dark red.
+```{r}
+nb_colors <- 18
+CLR <- c(hcl.colors(nb_colors, palette = "Blues"), rev(hcl.colors(nb_colors, palette = "Reds")))
+```
+
+
+::: {.panel-tabset}
+
+
+## $T$: Smoker mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _ceteris paribus_ \\(\\boldsymbol{x}\\mapsto\\text{CATE}[\\boldsymbol{x}]\\) without any transport.
+#| label: fig-CATE-cet-par-biv-GAM-2-contour-without-transport-smoker
+
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_smoker-mat_gam_2_0_smoker,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("smoker mother") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "smoker mother" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("smoker") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "smoker" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_smoker-mat_gam_2_0_smoker, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+## $T$: Black mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _ceteris paribus_ \\(\\boldsymbol{x}\\mapsto\\text{CATE}[\\boldsymbol{x}]\\) without any transport.
+#| label: fig-CATE-cet-par-biv-GAM-2-contour-without-transport-blackm
+
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_blackm - mat_gam_2_0_blackm,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("Black mother") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "Black mother" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("Black") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "Black" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_blackm-mat_gam_2_0_blackm, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+
+## $T$: Baby girl
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _ceteris paribus_ \\(\\boldsymbol{x}\\mapsto\\text{CATE}[\\boldsymbol{x}]\\) without any transport.
+#| label: fig-CATE-cet-par-biv-GAM-2-contour-without-transport-sex
+
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_sex - mat_gam_2_0_sex,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("baby girl") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby girl" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("girl") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "girl" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_sex-mat_gam_2_0_sex, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+:::
+
+
+
+### Contours of the _mutatis mutandis_ $\boldsymbol{x}\mapsto\text{SCATE}[\boldsymbol{x}]$.
+
+
+::: {.panel-tabset}
+
+
+## $T$: Smoker mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _mutatis mutandis_ \\(\\boldsymbol{x}\\mapsto\\text{SCATE}[\\boldsymbol{x}]\\).
+#| label: fig-CATE-mutatis-mutandis-biv-GAM-2-contour-with-transport-smoker
+
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_t_smoker-mat_gam_2_0_smoker,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("smoker mother") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "smoker mother" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("smoker") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "smoker" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_t_smoker-mat_gam_2_0_smoker, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+
+## $T$: Black mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _mutatis mutandis_ \\(\\boldsymbol{x}\\mapsto\\text{SCATE}[\\boldsymbol{x}]\\).
+#| label: fig-CATE-mutatis-mutandis-biv-GAM-2-contour-with-transport-black
+
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_t_blackm-mat_gam_2_0_blackm,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("Black mother") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "Black mother" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("Black") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "Black" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_t_blackm-mat_gam_2_0_blackm, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+## $T$: Baby girl
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: Contours of the _mutatis mutandis_ \\(\\boldsymbol{x}\\mapsto\\text{SCATE}[\\boldsymbol{x}]\\).
+#| label: fig-CATE-mutatis-mutandis-biv-GAM-2-contour-with-transport-sex
+
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_t_sex-mat_gam_2_0_sex,
+      xlab = "",
+      ylab = "",
+      axes=FALSE, ylim=c(0, 90), xlim = c(1800, 4600),
+      col = CLR, breaks = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+mtext(expression("Weight of the baby (" * phantom("baby girl") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby girl" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("girl") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "girl" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_t_sex-mat_gam_2_0_sex, add = TRUE,
+        levels = seq(-nb_colors/100, nb_colors/100, length = (2*nb_colors)+1))
+```
+
+:::
+
+
+### Positive vs negative CATE: boundaries, without transport
+
+We can graph a `r colorize("positive", col_pos)`/`r colorize("negative", col_neg)` distinction for the conditional average treatment effect (`r colorize("positive is red", col_pos)`, `r colorize("negative is blue", col_neg)`). 
+
+::: {.panel-tabset}
+
+
+## $T$: Smoker mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect (GAM with more knots), without transport.
+#| label: fig-CATE-biv-GAM-2-pos-neg-contour-no-transport-smoker
+
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_smoker-mat_gam_2_0_smoker,
+      xlab = "",
+      ylab = "", 
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("smoker mother") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "smoker mother" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("smoker") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "smoker" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_smoker-mat_gam_2_0_smoker,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+
+## $T$: Black mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect (GAM with more knots), without transport.
+#| label: fig-CATE-biv-GAM-2-pos-neg-contour-no-transport-blackm
+
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_blackm-mat_gam_2_0_blackm,
+      xlab = "",
+      ylab = "", 
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("Black mother") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "Black mother" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("Black") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "Black" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_blackm-mat_gam_2_0_blackm,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+
+## $T$: Baby girl
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect (GAM with more knots), without transport.
+#| label: fig-CATE-biv-GAM-2-pos-neg-contour-no-transport-sex
+
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_sex-mat_gam_2_0_sex,
+      xlab = "",
+      ylab = "", 
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("baby girl") * ", no transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby girl" * phantom(", no transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother (" * phantom("girl") * ", no transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother (") * "girl" * phantom(", no transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_sex-mat_gam_2_0_sex,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+:::
+
+### Positive vs negative CATE: boundaries, with transport
+
+::: {.panel-tabset}
+
+
+## $T$: Smoker mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect (GAM with more knots), with transport.
+#| label: fig-CATE-biv-GAM-2-pos-neg-contour-smoker
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_t_smoker-mat_gam_2_0_smoker,
+      xlab = "",
+      ylab = "",
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("smoker mother") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "smoker mother" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("smoker") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "smoker" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_t_smoker-mat_gam_2_0_smoker,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+
+## $T$: Black mother
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect (GAM with more knots), with transport.
+#| label: fig-CATE-biv-GAM-2-pos-neg-contour-blackm
+
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_t_blackm-mat_gam_2_0_blackm,
+      xlab = "",
+      ylab = "",
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("Black mother") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "Black mother" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("Black") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "Black" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_t_blackm-mat_gam_2_0_blackm,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+
+## $T$: Baby girl
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used create the plot"
+#| fig-cap: <span style="color:#FFB59F">Positive</span>/<span style="color:#88B1D6">negative</span> distinction for the conditional average treatment effect (GAM with more knots), with transport.
+#| label: fig-CATE-biv-GAM-2-pos-neg-contour-sex
+
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+image(val_birth_weight, val_wtgain, mat_gam_2_1_t_sex-mat_gam_2_0_sex,
+      xlab = "",
+      ylab = "",
+      axes = FALSE, ylim = c(0, 90), xlim = c(1800, 4600),
+      col = CLR[c(10, 24)], breaks = c(-5, 0, 5))
+mtext(expression("Weight of the baby (" * phantom("baby girl") * ", with transport)"),
+      side=1,line=3, col = "black")
+mtext(expression(phantom("Weight of the baby (") * "baby girl" * phantom(", with transport)")),
+      side=1,line=3, col = couleur2)
+mtext(expression("Weight gain of the mother(" * phantom("girl") * ", w/ transport)"),
+      side=2,line=3)
+mtext(expression(phantom("Weight gain of the mother(") * "girl" * phantom(", w/ transport)")),
+      side=2, line=3, col = couleur2)
+axis(1)
+axis(2)
+axis(3, at = quantile(base$birth_weight[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), 
+     label = paste(seq(10, 90, by = 10), "%"))
+axis(4, at = quantile(base$wtgain[pull(base, treatment_name) == treatment_0],
+                      seq(10, 90, by = 10)/100), label = paste(seq(10, 90, by = 10), "%"))
+contour(val_birth_weight, val_wtgain, mat_gam_2_1_t_sex-mat_gam_2_0_sex,
+        add = TRUE, levels = c(-1, 0, 1), lwd = 2)
+```
+
+:::
+
+

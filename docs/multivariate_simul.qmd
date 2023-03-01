@@ -1,0 +1,1037 @@
+---
+title: "Optimal Transport for Counterfactual Estimation: A Method for Causal Inference"
+subtitle: "Online Appendix: simulations (multivariate case)"
+pdf-engine: lualatex
+fontsize: 9pt
+link-citations: true
+from: markdown+emoji
+author: 
+  - Arthur Charpentier
+  - Emmanuel Flachaire
+  - Ewen Gallic
+lang: en
+crossref:
+  title-delim: ". "
+toc: true
+format:
+  html:
+    code-fold: false
+    code-summary: "Show the R codes"
+    number-sections: true
+    html-math-method: mathjax
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+    include-in-header:
+      - assets/colors.tex
+fig-cap-location: top
+tbl-cap-location: top
+execute:
+  echo: true
+  cache: true
+bibliography: ../References/biblio.bib
+self-contained: true
+warning: false
+title-block-banner: true
+---
+
+```{r optn, echo=FALSE, include=TRUE, message=FALSE, warning=FALSE, cache=FALSE}
+library(tidyverse)
+library(wesanderson)
+library(car)
+library(transport)
+library(splines)
+library(mgcv)
+library(expm)
+library(tidyverse)
+
+colorize <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    
+    if(!str_detect(substitute(color), "^#")){
+      color <- deparse(substitute(color))
+    }
+    
+    sprintf("\\textcolor{%s}{%s}", color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'>%s</span>", color,
+      x)
+  } else x
+}
+
+library(wesanderson)
+colr1 <- wes_palette("Darjeeling1")
+colr2 <- wes_palette("Darjeeling2")
+couleur1 <- colr1[2] #00a389
+couleur2 <- colr1[4] #ff7c00
+couleur3 <- colr2[2] #006e9e
+coul1 <- colr1[1]
+coul2 <- colr1[3]
+
+CLR <- c(hcl.colors(16,palette="Blues"),rev(hcl.colors(16,palette="Reds")))
+col_neg <- CLR[10]
+col_pos <- CLR[24]
+```
+
+::: {.hidden}
+
+$$
+\usepackage{dsfont}
+\usepackage{xcolor}
+\require{mathtools}
+\definecolor{bayesred}{RGB}{147, 30, 24}
+\definecolor{bayesblue}{RGB}{32, 35, 91}
+\definecolor{bayesorange}{RGB}{218, 120, 1}
+\definecolor{grey}{RGB}{128, 128, 128}
+\definecolor{couleur1}{RGB}{0,163,137}
+\definecolor{couleur2}{RGB}{255,124,0}
+\definecolor{couleur3}{RGB}{0, 110, 158}
+\definecolor{coul1}{RGB}{255,37,0}
+\definecolor{coul2}{RGB}{242,173,0}
+\definecolor{col_neg}{RGB}{155, 191, 221}
+\definecolor{col_pos}{RGB}{255, 128, 106}
+{\color{bayesorange} P (\text{H} \mid \text{E})} = \frac
+{{\color{bayesred} P(\text{H})} \times 
+{\color{bayesblue}P(\text{E} \mid \text{H})}}
+{\color{grey} {P(\text{E})}}
+$$
+
+:::
+
+In this notebook, we compute the SCATE at three different points: $\boldsymbol{x}=(2500,60)$,  $\boldsymbol{x}=(4200,60)$, and $\boldsymbol{x}=(2500,20)$. At each point, we will estimate the SCATE using a GAM model with Gaussian transport depending on the number of observations used to train the models.
+
+# Data {#sec-data}
+
+To illustrate the methods, we rely on the _Linked Birth/Infant Death Cohort Data_ (2013 cohort). The CSV files for the 2013 cohort were downloaded from the NBER collection of [Birth Cohort Linked Birth and Infant Death Data](http://www.cdc.gov/nchs/linked.htm) of the [National Vital Statistics System](http://www.cdc.gov/nchs/nvss.htm) of the [National Center for Health Statistics](http://www.cdc.gov/nchs/nvss.htm), on the [NBER](https://www.nber.org/research/data/linked-birthinfant-death-cohort-data) website. We formated the data (see [./births_stats.html](./births_stats.html)).
+
+Let us load the birth data.
+```{r}
+library(tidyverse)
+load("../data/births.RData")
+```
+
+Then, we can only keep a subsample of variables to illustrate the method.
+```{r}
+base <- 
+  births %>% 
+  mutate(
+    black_mother = mracerec == "Black",
+    nonnatural_delivery = rdmeth_rec != "Vaginal"
+  ) %>% 
+  select(
+    sex, dbwt, cig_rec, wtgain, 
+    black_mother, nonnatural_delivery,
+    mracerec, rdmeth_rec
+  ) %>% 
+  mutate(
+    cig_rec = replace_na(cig_rec, "Unknown or not stated"),
+    black_mother = ifelse(black_mother, yes = "Yes", no = "No"),
+    is_girl = ifelse(sex == "Female", yes = "Yes", no = "No")
+  ) %>% 
+  labelled::set_variable_labels(
+    black_mother = "Is the mother Black?",
+    is_girl = "Is the newborn a girl?",
+    nonnatural_delivery = "Is the delivery method non-natural?"
+  ) %>% 
+  rename(birth_weight = dbwt)
+base
+```
+
+The variables that were kept are the following:
+
+- `sex`: sex of the newborn
+- `birth_weight`: Birth Weight (in Grams)
+- `cig_rec`: mother smokes cigarettes
+- `wtgain`: mother weight gain
+- `mracerec`: mother's race
+- `black_mother`: is mother black?
+- `rdmeth_rec`: delivery method
+- `nonnatural_delivery`: is the delivery method non-natural?
+
+Then, let us discard individuals with missing values.
+
+```{r}
+base <- 
+  base %>% 
+  filter(
+    !is.na(birth_weight),
+    !is.na(wtgain),
+    !is.na(nonnatural_delivery),
+    !is.na(black_mother)
+  )
+```
+
+
+Let us define some colours for later use:
+```{r}
+library(wesanderson)
+colr1 <- wes_palette("Darjeeling1")
+colr2 <- wes_palette("Darjeeling2")
+couleur1 <- colr1[2]
+couleur2 <- colr1[4]
+couleur3 <- colr2[2]
+
+coul1 <- "#882255"
+coul2 <- "#DDCC77"
+```
+
+
+We need to load some packages.
+```{r}
+library(car)
+library(transport)
+library(splines)
+library(mgcv)
+library(expm)
+library(tidyverse)
+```
+
+
+Let us define the same functions as that used in [reproduction_multivariate.html](reproduction_multivariate.html).
+
+
+# Functions
+
+## Models
+
+
+Let us estimate $\color{couleur1}{\widehat{m}_0}$ and $\color{couleur2}{\widehat{m}_1}$ with a logistic GAM model (cubic spline first, then with more knots and degrees). To that end, we can define a function that will estimate both models and return them within a list.
+
+```{r}
+library(splines)
+
+#' Returns $\hat{m}_0()$ and $\hat{m}_1()$, using GAM
+#' @param target name of the target variable
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param x_m_names names of the mediator variable
+#' @param data data frame with the observations
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+#' @param df degrees of freedom (in the `bs()` function, deefault to `df=3`)
+models_spline <- function(target, treatment_name, x_m_names, data, treatment_0, treatment_1, df = 3){
+  
+  # \hat{m}_0()
+  formula_glm <- paste0(target, "~", paste0("bs(", x_m_names, ", df = ",df, ")", collapse = " + "))
+  reg_0 <- bquote(
+    glm(formula = .(formula_glm), data=data, family = binomial,
+        subset = (.(treatment_name) == .(treatment_0))),
+    list(
+      formula_glm = formula_glm,
+      treatment_name = as.name(treatment_name),
+      treatment_0 = treatment_0)
+  ) %>% eval()
+  # \hat{m}_1()
+  reg_1 <- bquote(
+    glm(formula = .(formula_glm), data=data, family = binomial,
+        subset = (.(treatment_name) == .(treatment_1))),
+    list(
+      formula_glm = formula_glm,
+      treatment_name = as.name(treatment_name),
+      treatment_1 = treatment_1)
+  ) %>% eval()
+  
+  list(reg_0 = reg_0, reg_1 = reg_1)
+}
+```
+
+
+### GAM (with cubic splines)
+
+
+::: {.panel-tabset}
+
+### $T$: Smoker mother
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+```
+
+$\color{couleur1}{\widehat{m}_0}$ and $\color{couleur2}{\widehat{m}_1}$:
+```{r reg-gam-smoker}
+reg_gam_smoker <- 
+  models_spline(target = target,
+              treatment_name = treatment_name, 
+              x_m_names = x_m_names,
+              data = base, treatment_0 = treatment_0, treatment_1 = treatment_1, df = c(3, 3))
+reg_gam_smoker_0 <- reg_gam_smoker$reg_0
+reg_gam_smoker_1 <- reg_gam_smoker$reg_1
+```
+
+### $T$: Black mother
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+```
+
+```{r reg-gam-blackm}
+reg_gam_blackm <- 
+  models_spline(target = target,
+              treatment_name = treatment_name, 
+              x_m_names = x_m_names,
+              data = base, treatment_0 = treatment_0, treatment_1 = treatment_1, df = c(3, 3))
+reg_gam_blackm_0 <- reg_gam_blackm$reg_0
+reg_gam_blackm_1 <- reg_gam_blackm$reg_1
+```
+
+
+### $T$: Baby girl
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+```
+
+$\color{couleur1}{\widehat{m}_0}$ and $\color{couleur2}{\widehat{m}_1}$:
+```{r reg-gam-sex}
+reg_gam_sex <- 
+  models_spline(target = target,
+              treatment_name = treatment_name, 
+              x_m_names = x_m_names,
+              data = base, treatment_0 = treatment_0, treatment_1 = treatment_1, df = c(3, 3))
+reg_gam_sex_0 <- reg_gam_sex$reg_0
+reg_gam_sex_1 <- reg_gam_sex$reg_1
+```
+
+
+:::
+
+## Prediction Functions
+
+The prediction function for GAM:
+```{r}
+#' @param object regression model (GAM)
+#' @param newdata data frame in which to look for the mediator variable used to predict the target
+model_spline_predict <- function(object, newdata){
+  predict(object, newdata = newdata, type="response")
+}
+```
+
+
+
+## Transport
+
+### Gaussian Assumption
+
+The transport function can be defined as follows:
+
+```{r}
+#' Optimal Transport assuming Gaussian distribution for the mediator variables (helper function)
+#' @return A list with the mean and variance of the mediator in each subset, and the symmetric matrix A.
+#' @param target name of the target variable
+#' @param x_m_names vector of names of the mediator variables
+#' @param scale vector of scaling to apply to each `x_m_names` variable to transport (default to 1)
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+transport_gaussian_param <- function(target, x_m_names, scale=1, treatment_name, treatment_0, treatment_1){
+  base_0_unscaled <- 
+    base %>% 
+    select(!!c(x_m_names, treatment_name)) %>% 
+    filter(!!sym(treatment_name) ==  treatment_0)
+  base_1_unscaled <- 
+    base %>% 
+    select(!!c(x_m_names, treatment_name)) %>% 
+    filter(!!sym(treatment_name) ==  treatment_1)
+  
+  for(i in 1:length(scale)){
+    base_0_scaled <- 
+      base_0_unscaled %>% 
+      mutate(!!sym(x_m_names[i]) := !!sym(x_m_names[i]) * scale[i])
+    base_1_scaled <- 
+      base_1_unscaled %>% 
+      mutate(!!sym(x_m_names[i]) := !!sym(x_m_names[i]) * scale[i])
+  }
+  
+  # Mean in each subset (i.e., T=0, T=1)
+  m_0 <- base_0_scaled %>% summarise(across(!!x_m_names, mean)) %>% as_vector()
+  m_1 <- base_1_scaled %>% summarise(across(!!x_m_names, mean)) %>% as_vector()
+  # Variance
+  S_0 <- base_0_scaled %>% select(!!x_m_names) %>% var()
+  S_1 <- base_1_scaled %>% select(!!x_m_names) %>% var()
+  # Matrix A
+  A <- (solve(sqrtm(S_0))) %*% sqrtm( sqrtm(S_0) %*% S_1 %*% (sqrtm(S_0)) ) %*% solve(sqrtm(S_0))
+  
+  list(m_0 = m_0, m_1 = m_1, S_0 = S_0, S_1 = S_1, A = A, scale = scale, x_m_names = x_m_names)
+}
+```
+
+We create a function that transports a single observation, given the different parameters:
+```{r}
+#' Gaussian transport for a single observation (helper function)
+#' @param z vector of variables to transport (for a single observation)
+#' @param A symmetric positive matrix that satisfies \(A\sigma_0A=\sigma_1\)
+#' @param m_0,m_1 vectors of mean values in the subsets \(\mathcal{D}_0\) and \(\mathcal{D}_1\)
+#' @param scale vector of scaling to apply to each variable to transport (default to 1)
+T_C_single <- function(z, A, m_0, m_1, scale = 1){
+  z <- z*scale
+  as.vector(m_1 + A %*% (z-m_0))*(1/scale)
+}
+```
+
+
+
+Lastly, we define a function that transports the mediator variables, under the Gaussian assumption. If the `params` argument is `NULL`{.R}, the arguments needed to estimate them through the `transport_gaussian_param()` function are required (`target`, `x_m_names`, `treatment_name`, `treatment_0`, `treatment_1`).
+```{r}
+#' Gaussian transport
+#' @param z data frame of variables to transport
+#' @param params (optional) parameters to use for the transport (result of `transport_gaussian_param()`, default to NULL)
+#' @param target name of the target variable
+#' @param x_m_names vector of names of the mediator variables
+#' @param scale vector of scaling to apply to each `x_m_names` variable to transport (default to 1)
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+gaussian_transport <- function(z, params = NULL, ..., x_m_names, scale, treatment_name, treatment_0, treatment_1){
+  if(is.null(params)){
+    # If the parameters of the transport function are not provided
+    # they need to be computed first
+    params <- 
+      transport_gaussian_param(target = target, x_m_names = x_m_names, 
+                               scale = scale, treatment_name = treatment_name, 
+                               treatment_0 = treatment_0, treatment_1 = treatment_1)
+  }
+  A <- params$A
+  m_0 <- params$m_0 ; m_1 <- params$m_1
+  scale <- params$scale
+  x_m_names <- params$x_m_names
+  
+  values_to_transport <- z %>% select(!!x_m_names)
+  transported_val <- 
+    apply(values_to_transport, 1, T_C_single, A = A, m_0 = m_0, m_1 = m_1,
+          scale = scale, simplify = FALSE) %>% 
+    do.call("rbind", .)
+  colnames(transported_val) <- colnames(z)
+  transported_val <- as_tibble(transported_val)
+  
+  structure(.Data = transported_val, params = params)
+}
+```
+
+
+# Example with $n=1000$
+
+We will now compute the SCATE at three different points: $\boldsymbol{x}=(2500,60)$,  $\boldsymbol{x}=(4200,60)$, and $\boldsymbol{x}=(2500,20)$. At each point, we will estimate the SCATE using a GAM model with Gaussian transport depending on the number of observations used to train the models.
+
+```{r}
+point_X = tibble(
+  wtgain = c(60,60,20),
+  birth_weight = c(2500,4200,2500)
+  )
+```
+
+We will make the sample size $n$ vary. Let us first consider $n=1000$.
+```{r}
+size <- 1000
+```
+
+Let us create a sample with 1,000 observation from `base`:
+```{r}
+sbase <- base[sample(1:nrow(base), size=size), ]
+```
+
+
+The transported values:
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+```
+
+```{r transported-val-N-smoker}
+point_X_t_n_smoker <- 
+  gaussian_transport(z = point_X, target = target,
+                     x_m_names = x_m_names, 
+                     scale = scale, treatment_name = treatment_name,
+                     treatment_0 = treatment_0, treatment_1 = treatment_1)
+point_X_t_n_smoker
+```
+
+## $T$: Black mother
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+```
+
+```{r transported-val-N-blackm}
+point_X_t_n_blackm <- 
+  gaussian_transport(z = point_X, target = target,
+                     x_m_names = x_m_names, 
+                     scale = scale, treatment_name = treatment_name,
+                     treatment_0 = treatment_0, treatment_1 = treatment_1)
+point_X_t_n_blackm
+```
+
+
+## $T$: Baby girl
+
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+```
+
+```{r transported-val-N-sex}
+point_X_t_n_sex <- 
+  gaussian_transport(z = point_X, target = target,
+                     x_m_names = x_m_names, 
+                     scale = scale, treatment_name = treatment_name,
+                     treatment_0 = treatment_0, treatment_1 = treatment_1)
+point_X_t_n_sex
+```
+
+
+:::
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+The estimated parameters can be extracted as follows:
+```{r}
+params_smoker <- attr(point_X_t_n_smoker, "params")
+params_smoker
+```
+
+## $T$: Black mother
+
+The estimated parameters can be extracted as follows:
+```{r}
+params_blackm <- attr(point_X_t_n_blackm, "params")
+params_blackm
+```
+
+## $T$: Baby girl
+
+The estimated parameters can be extracted as follows:
+```{r}
+params_sex <- attr(point_X_t_n_sex, "params")
+params_sex
+```
+
+:::
+
+## Estimation
+
+Now that the two models $\color{couleur1}{\widehat{m}_0(x)}$ and $\color{couleur2}{\widehat{m}_1(x)}$ are defined and fitted to the data, we can compute the _Mutatis Mutandis_ Sample Conditional Average Effect.
+
+```{r}
+#' Computes the Sample Average Treatment Effect with and without transport
+#' @param x_0 vector of values at which to compute $\hat{m}_0(x_0)$, $\hat{m}_1(x_0)$
+#' @param x_t vector of values at which to compute $\hat{m}_1(\mathcal{T}(x_t))$
+#' @param x_m_name vector of names of the mediator variables
+#' @param mod_0 model $\hat{m}_0$
+#' @param mod_1 model $\hat{m}_1$
+#' @param pred_mod_0 prediction function for model $\hat{m}_0(\cdot)$
+#' @param pred_mod_1 prediction function for model $\hat{m}_1(\cdot)$
+#' @param return_x if `TRUE` (default) the mediator variables are returned in the table, as well as their transported values
+sate <- function(x_0, x_t, x_m_names, mod_0, mod_1, pred_mod_0, pred_mod_1, return_x = TRUE){
+  if(is.vector(x_0)){
+    # Univariate case
+    new_data <- tibble(!!x_m_names := x_0)
+  }else{
+    new_data <- x_0
+  }
+  if(is.vector(x_t)){
+    # Univariate case
+    new_data_t <- tibble(!!x_m_names := x_t)
+  }else{
+    new_data_t <- x_t
+  }
+  
+  
+  # $\hat{m}_0(x_0)$
+  y_0 <- pred_mod_0(object = mod_0, newdata = new_data)
+  # $\hat{m}_1(x_0)$
+  y_1 <- pred_mod_1(object = mod_1, newdata = new_data)
+  # $\hat{m}_1(\mathcal{T}(x_0))$
+  y_1_t <- pred_mod_1(object = mod_1, newdata = new_data_t)
+  
+  
+  scate_tab <- 
+    tibble(y_0 = y_0, y_1 = y_1, y_1_t = y_1_t,
+         CATE = y_1-y_0, SCATE = y_1_t-y_0)
+  
+  if(return_x){
+    new_data_t <- new_data_t %>% rename_all(~paste0(.x, "_t"))
+    scate_tab <- bind_cols(new_data, new_data_t, scate_tab)
+  }
+  scate_tab
+}
+```
+
+## GAM (with cubic splines), Gaussian assumption for transport
+
+Let us compute here the SCATE where the models $\color{couleur1}{\widehat{m}_0(x)}$ and $\color{couleur2}{\widehat{m}_1(x)}$ are GAM and where the transport method assumes a Gaussian distribution for both mediators.
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+```{r}
+mm_sate_gam_smoker <- 
+  sate(
+    x_0 = point_X,
+    x_t = point_X_t_n_smoker,
+    x_m_names = c("wtgain", "birth_weight"),
+    mod_0 = reg_gam_smoker_0,
+    mod_1 = reg_gam_smoker_1,
+    pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict,
+    return = TRUE)
+mm_sate_gam_smoker
+```
+
+## $T$: Black mother
+
+```{r}
+mm_sate_gam_blackm <- 
+  sate(
+    x_0 = point_X,
+    x_t = point_X_t_n_blackm,
+    x_m_names = c("wtgain", "birth_weight"),
+    mod_0 = reg_gam_blackm_0,
+    mod_1 = reg_gam_blackm_1,
+    pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict,
+    return = TRUE)
+mm_sate_gam_blackm
+```
+
+## $T$: Baby girl
+
+```{r}
+mm_sate_gam_sex <- 
+  sate(
+    x_0 = point_X,
+    x_t = point_X_t_n_sex,
+    x_m_names = c("wtgain", "birth_weight"),
+    mod_0 = reg_gam_sex_0,
+    mod_1 = reg_gam_sex_1,
+    pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict,
+    return = TRUE)
+mm_sate_gam_sex
+```
+
+:::
+
+
+# Simulations
+
+Now, let us wrap all these estimation stepts in a single function, so that we can make simulations where we vary the size of the sample $n$ used to compute the SCTE. For each value of $n$, let us compute the _mutatis mutandis_ CATE (SCATE) for our three individuals of $\boldsymbol{x}$. We will further draw 500 different sub-samples over which the estimations will be computed.
+```{r}
+#' @param size size of the sample over which to compute the SCATE
+#' @param target name of the target variable
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param x_m_names names of the mediator variables
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+#' @param scale vector of scaling to apply to each `x_m_names` variable to transport (default to 1)
+simul_n <- function(size, target, x_m_names, treatment_name, treatment_0, treatment_1, scale){
+  # Random sub-sample of size `size`
+  sbase <- base[sample(1:nrow(base), size=size), ]
+  # Regressions on both subsets
+  reg_gam <- 
+    models_spline(target = target,
+                  treatment_name = treatment_name, 
+                  x_m_names = x_m_names,
+                  data = sbase, treatment_0 = treatment_0, treatment_1 = treatment_1, df = c(3, 3))
+  reg_gam_0 <- reg_gam$reg_0
+  reg_gam_1 <- reg_gam$reg_1
+  
+  # Transported values
+  point_X_t_n <- 
+    gaussian_transport(z = point_X, target = target,
+                       x_m_names = x_m_names, 
+                       scale = scale, treatment_name = treatment_name,
+                       treatment_0 = treatment_0, treatment_1 = treatment_1)
+  
+  # SCATE
+  mm_sate_gam <- 
+    sate(
+      x_0 = point_X,
+      x_t = point_X_t_n,
+      x_m_names = c("wtgain", "birth_weight"),
+      mod_0 = reg_gam_0,
+      mod_1 = reg_gam_1,
+      pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict,
+      return = TRUE)
+  
+  tibble(SCATE = mm_sate_gam$SCATE, idx = 1:nrow(point_X), size = size, treatment_name = treatment_name)
+}
+```
+
+For example, with a size $n=100$, when the treatment is whether the mother is a smoker or not:
+```{r}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+
+resul_simul_100 <- 
+  simul_n(size = 100, target = target, x_m_names = x_m_names, 
+        treatment_name = treatment_name, treatment_0 = treatment_0, treatment_1 = treatment_1, scale = scale)
+resul_simul_100
+```
+
+The different values of $n$:
+```{r}
+sample_size <- 10^(seq(3,5.2,length=51))
+sample_size
+```
+
+The number of replications of the simulations for each value of $n$:
+```{r}
+nb_replicate <- 500
+```
+
+
+Let us perform the simulations in parallel.
+```{r, eval=FALSE}
+library(parallel)
+ncl <- detectCores()-1
+cl <- makeCluster(ncl)
+invisible(clusterEvalQ(cl, library(tidyverse, warn.conflicts=FALSE, quietly=TRUE)))
+invisible(clusterEvalQ(cl, library(splines, warn.conflicts=FALSE, quietly=TRUE)))
+invisible(clusterEvalQ(cl, library(expm, warn.conflicts=FALSE, quietly=TRUE)))
+```
+
+
+The `simul_n()`{.R} function we defined need to access some functions and some data in each cluster:
+```{r, eval=FALSE}
+clusterExport(cl, c("models_spline", "gaussian_transport", "transport_gaussian_param",
+                    "T_C_single" ,"mm_sate_gam", "model_spline_predict", "sate"))
+clusterExport(cl, c("point_X", "base"))
+```
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+
+```{r, eval=FALSE}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "cig_rec"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+
+cate_sim_smoker <- 
+  pbapply::pblapply(rep(sample_size, each = nb_replicate), 
+                    simul_n, cl = cl, target = target, x_m_names = x_m_names, 
+                    treatment_name = treatment_name, 
+                    treatment_0 = treatment_0, treatment_1 = treatment_1, scale = scale)
+```
+
+The results can be saved:
+```{r, eval=FALSE}
+save(cate_sim_smoker, file = "../output/simulations/cate_sim_smoker.rda")
+```
+
+And then loaded:
+```{r load-sim-smoker}
+load("../output/simulations/cate_sim_smoker.rda")
+cate_sim_smoker[[1]]
+```
+
+## $T$: Black mother
+
+
+```{r, eval=FALSE}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "black_mother"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+
+cate_sim_blackm <- 
+  pbapply::pblapply(rep(sample_size, each = nb_replicate), 
+                    simul_n, cl = cl, target = target, x_m_names = x_m_names, 
+                    treatment_name = treatment_name, 
+                    treatment_0 = treatment_0, treatment_1 = treatment_1, scale = scale)
+
+```
+
+The results can be saved:
+```{r, eval=FALSE}
+save(cate_sim_blackm, file = "../output/simulations/cate_sim_blackm.rda")
+```
+
+And then loaded:
+```{r load-sim-blackm}
+load("../output/simulations/cate_sim_blackm.rda")
+```
+
+## $T$: Baby girl
+
+
+```{r, eval=FALSE}
+target         <- "nonnatural_delivery"
+x_m_names       <- c("wtgain", "birth_weight")
+scale          <- c(1,1/100)
+treatment_name <- "sex"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+
+cate_sim_sex <- 
+  pbapply::pblapply(rep(sample_size, each = nb_replicate), 
+                    simul_n, cl = cl, target = target, x_m_names = x_m_names, 
+                    treatment_name = treatment_name, 
+                    treatment_0 = treatment_0, treatment_1 = treatment_1, scale = scale)
+
+```
+
+The results can be saved:
+```{r, eval=FALSE}
+save(cate_sim_sex, file = "../output/simulations/cate_sim_sex.rda")
+```
+
+And then loaded:
+```{r load-sim-sex}
+load("../output/simulations/cate_sim_sex.rda")
+```
+
+
+
+:::
+
+```{r, eval=FALSE}
+stopCluster(cl = cl)
+```
+
+
+
+Then, we can plot the results of the simulations. First, we can compute the average value of the SCATE over the 500 runs of the simulation, for each sample size.
+
+
+```{r}
+cate_sim_df <- 
+  bind_rows(cate_sim_smoker) %>% 
+  bind_rows(
+    bind_rows(cate_sim_blackm)
+  ) %>% 
+  bind_rows(
+    bind_rows(cate_sim_sex)
+  ) %>% 
+  group_by(treatment_name, idx, size) %>% 
+  summarise(
+    q1_05 = quantile(SCATE, probs = .05),
+    mean = mean(SCATE),
+    q1_95 = quantile(SCATE, probs = .95),
+  )
+```
+
+```{r}
+#| fig-cap: Estimation of the SCATE at different values of x, using a GAM model with Gaussian transport, on n observations when Y=1 (non-natural delivery) and X is the weight of the newborn infant and the weight gain of the mother when T indicates either whether the mother is a smoker or not, Black or not or if the baby is a girl or not.
+#| label: fig-evol-SCATE-Gaussian
+cate_sim_df %>% 
+  mutate(
+    name = factor(idx, levels = c(1:3),
+                  labels = c("x = (2500, 60)", "x = (4200, 60)", "x = (2500, 20)")),
+    treatment_name = factor(treatment_name, levels = c("cig_rec", "black_mother", "sex"),
+                            labels = c("Smoker mother", "Black mother", "Baby girl"))
+  ) %>% 
+ggplot(data = .,
+       mapping = aes(x = size, y = mean)) +
+  geom_ribbon(mapping = aes(ymin = q1_05, ymax = q1_95), fill = couleur1, alpha = .3) +
+  geom_hline(yintercept = 0, colour = "grey", linetype = "dashed") +
+  geom_line(colour = couleur3) +
+  facet_grid(name~treatment_name, scales = "free") +
+  scale_x_log10() +
+  labs(x = "Number of observations (log scales)", y = "SCATE(x)") +
+  theme_bw()
+```
+
+
+Equivalently, we can create beautiful plots with {graphics}.
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker mother
+
+```{r}
+#| fig-cap: Estimation of the Mutatis Mutandis CATE for $\boldsymbol{x}=(2500,60)$, using a GAM model with Gaussian transport, on n observations when Y=1 (non-natural delivery) and X is the weight of the newborn infant and the weight gain of the mother when T indicates whether the mother is a smoker or not.
+#| label: fig-evol-SCATE-Gaussian-1-smoker
+cate_sim_smoker_df <- 
+  bind_rows(cate_sim_smoker) %>% 
+  group_by(idx, size) %>% 
+  summarise(
+    q1_05 = quantile(SCATE, probs = .05),
+    mean = mean(SCATE),
+    q1_95 = quantile(SCATE, probs = .95),
+  )
+
+par(mfrow = c(1,3))
+CATE <- cate_sim_smoker_df %>% filter(idx == 1)
+plot(x = CATE$size, y = CATE$mean,
+     col=couleur3, lwd=2,
+     type="l", ylim=c(-.5,.5),
+     log="x",
+     xlab="Number of observations (log scales)",
+     ylab="CATE(2500,60)")
+polygon(c(CATE$size, rev(CATE$size)), c(CATE$q1_05, rev(CATE$q1_95)),
+        col=scales::alpha(couleur1,.3),border=NA)
+lines(CATE$size, CATE$q1_05, col = couleur1)
+lines(CATE$size, CATE$q1_95, col = couleur1)
+
+CATE <- cate_sim_smoker_df %>% filter(idx == 2)
+plot(x = CATE$size, y = CATE$mean,
+     col=couleur3, lwd=2,
+     type = "l", ylim = c(-.5,.5), log = "x",
+     xlab = "Number of observations (log scales)",
+     ylab = "CATE(4200,60)")
+polygon(c(CATE$size, rev(CATE$size)), c(CATE$q1_05, rev(CATE$q1_95)),
+        col = scales::alpha(couleur1,.3), border = NA)
+lines(CATE$size, CATE$q1_05, col = couleur1)
+lines(CATE$size, CATE$q1_95, col = couleur1)
+
+CATE <- cate_sim_smoker_df %>% filter(idx == 3)
+plot(x = CATE$size, y = CATE$mean,
+     col = couleur3, lwd=2,
+     type = "l",ylim=c(-.5,.5),log="x",
+     xlab = "Number of observations (log scales)",
+     ylab = "CATE(2500,20)")
+polygon(c(CATE$size, rev(CATE$size)), c(CATE$q1_05, rev(CATE$q1_95)),
+        col = scales::alpha(couleur1,.3), border = NA)
+lines(CATE$size, CATE$q1_05, col = couleur1)
+lines(CATE$size, CATE$q1_95, col = couleur1)
+```
+
+## $T$: Black mother
+
+```{r}
+#| fig-cap: Estimation of the Mutatis Mutandis CATE for $\boldsymbol{x}=(2500,60)$, using a GAM model with Gaussian transport, on n observations when Y=1 (non-natural delivery) and X is the weight of the newborn infant and the weight gain of the mother when T indicates whether the mother is Black or not.
+#| label: fig-evol-SCATE-Gaussian-1-blackm
+cate_sim_blackm_df <- 
+  bind_rows(cate_sim_blackm) %>% 
+  group_by(idx, size) %>% 
+  summarise(
+    q1_05 = quantile(SCATE, probs = .05),
+    mean = mean(SCATE),
+    q1_95 = quantile(SCATE, probs = .95),
+  )
+
+par(mfrow = c(1,3))
+CATE <- cate_sim_blackm_df %>% filter(idx == 1)
+plot(x = CATE$size, y = CATE$mean,
+     col=couleur3, lwd=2,
+     type = "l", ylim = c(-.3,.3), log = "x",
+     xlab="Number of observations (log scales)",
+     ylab="CATE(2500,60)")
+polygon(c(CATE$size, rev(CATE$size)), c(CATE$q1_05, rev(CATE$q1_95)),
+        col=scales::alpha(couleur1,.3),border=NA)
+lines(CATE$size, CATE$q1_05, col = couleur1)
+lines(CATE$size, CATE$q1_95, col = couleur1)
+
+CATE <- cate_sim_blackm_df %>% filter(idx == 2)
+plot(x = CATE$size, y = CATE$mean,
+     col=couleur3, lwd=2,
+     type = "l", ylim = c(-.3,.3), log = "x",
+     xlab = "Number of observations (log scales)",
+     ylab = "CATE(4200,60)")
+polygon(c(CATE$size, rev(CATE$size)), c(CATE$q1_05, rev(CATE$q1_95)),
+        col = scales::alpha(couleur1,.3), border = NA)
+lines(CATE$size, CATE$q1_05, col = couleur1)
+lines(CATE$size, CATE$q1_95, col = couleur1)
+
+CATE <- cate_sim_blackm_df %>% filter(idx == 3)
+plot(x = CATE$size, y = CATE$mean,
+     col = couleur3, lwd=2,
+     type = "l", ylim = c(-.3,.3), log = "x",
+     xlab = "Number of observations (log scales)",
+     ylab = "CATE(2500,20)")
+polygon(c(CATE$size, rev(CATE$size)), c(CATE$q1_05, rev(CATE$q1_95)),
+        col = scales::alpha(couleur1,.3), border = NA)
+lines(CATE$size, CATE$q1_05, col = couleur1)
+lines(CATE$size, CATE$q1_95, col = couleur1)
+```
+
+
+## $T$: Baby girl
+
+```{r}
+#| fig-cap: Estimation of the Mutatis Mutandis CATE for $\boldsymbol{x}=(2500,60)$, using a GAM model with Gaussian transport, on n observations when Y=1 (non-natural delivery) and X is the weight of the newborn infant and the weight gain of the mother when T indicates whether the newborn is a girl.
+#| label: fig-evol-SCATE-Gaussian-1-sex
+cate_sim_sex_df <- 
+  bind_rows(cate_sim_sex) %>% 
+  group_by(idx, size) %>% 
+  summarise(
+    q1_05 = quantile(SCATE, probs = .05),
+    mean = mean(SCATE),
+    q1_95 = quantile(SCATE, probs = .95),
+  )
+
+par(mfrow = c(1,3))
+CATE <- cate_sim_sex_df %>% filter(idx == 1)
+plot(x = CATE$size, y = CATE$mean,
+     col=couleur3, lwd=2,
+     type="l", ylim=c(-.2,.2), log="x",
+     xlab="Number of observations (log scales)",
+     ylab="CATE(2500,60)")
+polygon(c(CATE$size, rev(CATE$size)), c(CATE$q1_05, rev(CATE$q1_95)),
+        col=scales::alpha(couleur1,.3),border=NA)
+lines(CATE$size, CATE$q1_05, col = couleur1)
+lines(CATE$size, CATE$q1_95, col = couleur1)
+
+CATE <- cate_sim_sex_df %>% filter(idx == 2)
+plot(x = CATE$size, y = CATE$mean,
+     col=couleur3, lwd=2,
+     type="l", ylim=c(-.2,.2), log="x",
+     xlab = "Number of observations (log scales)",
+     ylab = "CATE(4200,60)")
+polygon(c(CATE$size, rev(CATE$size)), c(CATE$q1_05, rev(CATE$q1_95)),
+        col = scales::alpha(couleur1,.3), border = NA)
+lines(CATE$size, CATE$q1_05, col = couleur1)
+lines(CATE$size, CATE$q1_95, col = couleur1)
+
+CATE <- cate_sim_sex_df %>% filter(idx == 3)
+plot(x = CATE$size, y = CATE$mean,
+     col = couleur3, lwd=2,
+     type="l", ylim=c(-.2,.2), log="x",
+     xlab = "Number of observations (log scales)",
+     ylab = "CATE(2500,20)")
+polygon(c(CATE$size, rev(CATE$size)), c(CATE$q1_05, rev(CATE$q1_95)),
+        col = scales::alpha(couleur1,.3), border = NA)
+lines(CATE$size, CATE$q1_05, col = couleur1)
+lines(CATE$size, CATE$q1_95, col = couleur1)
+```
+
+
+:::

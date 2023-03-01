@@ -1,0 +1,1639 @@
+---
+title: "Optimal Transport for Counterfactual Estimation: A Method for Causal Inference"
+subtitle: "Online Appendix: simulations (univariate case)"
+pdf-engine: lualatex
+fontsize: 9pt
+link-citations: true
+from: markdown+emoji
+author: 
+  - Arthur Charpentier
+  - Emmanuel Flachaire
+  - Ewen Gallic
+lang: en
+crossref:
+  title-delim: ". "
+toc: true
+format:
+  html:
+    code-fold: false
+    code-summary: "Show the R codes"
+    number-sections: true
+    html-math-method: mathjax
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+    include-in-header:
+      - assets/colors.tex
+fig-cap-location: top
+tbl-cap-location: top
+execute:
+  echo: true
+  cache: true
+bibliography: ../References/biblio.bib
+self-contained: true
+warning: false
+title-block-banner: true
+---
+
+```{r optn, echo=FALSE, include=TRUE, message=FALSE, warning=FALSE, cache=FALSE}
+library(tidyverse)
+library(wesanderson)
+library(car)
+library(transport)
+library(splines)
+library(mgcv)
+library(expm)
+library(tidyverse)
+
+colorize <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    
+    if(!str_detect(substitute(color), "^#")){
+      color <- deparse(substitute(color))
+    }
+    
+    sprintf("\\textcolor{%s}{%s}", color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'>%s</span>", color,
+      x)
+  } else x
+}
+
+library(wesanderson)
+colr1 <- wes_palette("Darjeeling1")
+colr2 <- wes_palette("Darjeeling2")
+couleur1 <- colr1[2] #00a389
+couleur2 <- colr1[4] #ff7c00
+couleur3 <- colr2[2] #006e9e
+coul1 <- colr1[1]
+coul2 <- colr1[3]
+
+CLR <- c(hcl.colors(16,palette="Blues"),rev(hcl.colors(16,palette="Reds")))
+col_neg <- CLR[10]
+col_pos <- CLR[24]
+```
+
+::: {.hidden}
+
+$$
+\usepackage{dsfont}
+\usepackage{xcolor}
+\require{mathtools}
+\definecolor{bayesred}{RGB}{147, 30, 24}
+\definecolor{bayesblue}{RGB}{32, 35, 91}
+\definecolor{bayesorange}{RGB}{218, 120, 1}
+\definecolor{grey}{RGB}{128, 128, 128}
+\definecolor{couleur1}{RGB}{0,163,137}
+\definecolor{couleur2}{RGB}{255,124,0}
+\definecolor{couleur3}{RGB}{0, 110, 158}
+\definecolor{coul1}{RGB}{255,37,0}
+\definecolor{coul2}{RGB}{242,173,0}
+\definecolor{col_neg}{RGB}{155, 191, 221}
+\definecolor{col_pos}{RGB}{255, 128, 106}
+{\color{bayesorange} P (\text{H} \mid \text{E})} = \frac
+{{\color{bayesred} P(\text{H})} \times 
+{\color{bayesblue}P(\text{E} \mid \text{H})}}
+{\color{grey} {P(\text{E})}}
+$$
+
+:::
+
+In this notebook, we compute the SCATE at three different points: $\boldsymbol{x}=(2500,60)$,  $\boldsymbol{x}=(4200,60)$, and $\boldsymbol{x}=(2500,20)$. At each point, we will estimate the SCATE using a GAM model with Gaussian transport depending on the number of observations used to train the models.
+
+# Data {#sec-data}
+
+To illustrate the methods, we rely on the _Linked Birth/Infant Death Cohort Data_ (2013 cohort). The CSV files for the 2013 cohort were downloaded from the NBER collection of [Birth Cohort Linked Birth and Infant Death Data](http://www.cdc.gov/nchs/linked.htm) of the [National Vital Statistics System](http://www.cdc.gov/nchs/nvss.htm) of the [National Center for Health Statistics](http://www.cdc.gov/nchs/nvss.htm), on the [NBER](https://www.nber.org/research/data/linked-birthinfant-death-cohort-data) website. We formated the data (see [./births_stats.html](./births_stats.html)).
+
+Let us load the birth data.
+```{r}
+library(tidyverse)
+load("../data/births.RData")
+```
+
+Then, we can only keep a subsample of variables to illustrate the method.
+```{r}
+base <- 
+  births %>% 
+  mutate(
+    black_mother = mracerec == "Black",
+    nonnatural_delivery = rdmeth_rec != "Vaginal"
+  ) %>% 
+  select(
+    sex, dbwt, cig_rec, wtgain, 
+    black_mother, nonnatural_delivery,
+    mracerec, rdmeth_rec
+  ) %>% 
+  mutate(
+    cig_rec = replace_na(cig_rec, "Unknown or not stated"),
+    black_mother = ifelse(black_mother, yes = "Yes", no = "No"),
+    is_girl = ifelse(sex == "Female", yes = "Yes", no = "No")
+  ) %>% 
+  labelled::set_variable_labels(
+    black_mother = "Is the mother Black?",
+    is_girl = "Is the newborn a girl?",
+    nonnatural_delivery = "Is the delivery method non-natural?"
+  ) %>% 
+  rename(birth_weight = dbwt)
+base
+```
+
+The variables that were kept are the following:
+
+- `sex`: sex of the newborn
+- `birth_weight`: Birth Weight (in Grams)
+- `cig_rec`: mother smokes cigarettes
+- `wtgain`: mother weight gain
+- `mracerec`: mother's race
+- `black_mother`: is mother black?
+- `rdmeth_rec`: delivery method
+- `nonnatural_delivery`: is the delivery method non-natural?
+
+Then, let us discard individuals with missing values.
+
+```{r}
+base <- 
+  base %>% 
+  filter(
+    !is.na(birth_weight),
+    !is.na(wtgain),
+    !is.na(nonnatural_delivery),
+    !is.na(black_mother)
+  )
+```
+
+
+Let us define some colours for later use:
+```{r}
+library(wesanderson)
+colr1 <- wes_palette("Darjeeling1")
+colr2 <- wes_palette("Darjeeling2")
+couleur1 <- colr1[2]
+couleur2 <- colr1[4]
+couleur3 <- colr2[2]
+
+coul1 <- "#882255"
+coul2 <- "#DDCC77"
+```
+
+
+We need to load some packages.
+```{r}
+library(car)
+library(transport)
+library(splines)
+library(mgcv)
+library(expm)
+library(tidyverse)
+```
+
+# Functions
+
+Let us define the same functions as that used in [reproduction_univariate.html](reproduction_univariate.html).
+
+## Models
+
+
+Let us define a function that estimates $\color{couleur1}{\widehat{m}_0}$ or $\color{couleur2}{\widehat{m}_1}$ with a logistic GAM model (cubic spline first).
+
+```{r}
+library(splines)
+
+#' Returns $\hat{m}_0()$ or $\hat{m}_1()$, using GAM
+#' @param target name of the target variable
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param x_m_name name of the mediator variable
+#' @param data data frame with the observations
+#' @param treatment either non-treated (`0`) or treated (`1`)
+#' @param treatment_0 treatment value for non-treated
+#' @param treatment_1 treatment value for treated
+#' @param df degrees of freedom (in the `bs()` function, deefault to `df=3`)
+models_spline <- function(target, treatment_name, x_m_name, data, treatment = c(0,1), treatment_0=NULL, treatment_1=NULL, df = 3){
+  if(treatment == 0){
+    stopifnot(!is.null(treatment_0))
+    # \hat{m}_0()
+    reg <-
+      bquote(glm(.(target)~bs(.(x_m_name), df = df), data = data,
+                 family=binomial, subset = (.(treatment_name) == .(treatment_0))),
+             list(target = as.name(target), x_m_name=as.name(x_m_name),
+                  treatment_name = as.name(treatment_name),
+                  treatment_0 = treatment_0)) %>% 
+      eval()
+  }else{
+    stopifnot(!is.null(treatment_1))
+    # \hat{m}_1()
+    reg <- bquote(glm(.(target)~bs(.(x_m_name), df = df), data = data,
+                        family=binomial, subset = (.(treatment_name) == .(treatment_1))),
+                    list(target = as.name(target), x_m_name=as.name(x_m_name),
+                         treatment_name = as.name(treatment_name),
+                         treatment_1 = treatment_1)) %>% 
+      eval()
+  }
+  reg
+}
+
+```
+
+## Prediction Function
+
+Let us define a function that predicts the target variable on new data, using an estimated model (cubic splines).
+```{r}
+#' @param object regression model (GAM)
+#' @param newdata data frame in which to look for the mediator variable used to predict the target
+model_spline_predict <- function(object, newdata){
+  predict(object, newdata = newdata, type="response")
+}
+```
+
+
+
+
+## Transport
+
+### Quantile-based Assumption
+
+The transport function can be defined as follows:
+
+```{r}
+#' Quantile-based transport (Univariate)
+#' @param x_0 vector of values to be transported
+#' @param x_m_name name of the mediator variable
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+#' @param data data frame with both T=0 or T=1
+transport_quantile <- function(x_0, x_m_name, treatment_name, treatment_0, treatment_1, data){
+  ind_0 <- pull(data, treatment_name) == treatment_0
+  x_val <- pull(data, x_m_name)
+  # Empirical Cumulative Distribution Function for values of the mediator variable for non-treated
+  Fn <- ecdf(x_val)
+  # Probability associated in the non-treated
+  u <- Fn(x_0)
+  # Transported_values
+  x_1 <- pull(data, x_m_name)[pull(data, treatment_name) == treatment_1]
+  x_t_quantile <- quantile(x_1, u)
+  list(x_0 = x_0, u = u, x_t_quantile = x_t_quantile)
+}
+```
+
+## Sample Condional Average Treatment Effect
+
+```{r}
+#' Computes the Sample Average Treatment Effect with and without transport
+#' @param x_0 vector of values at which to compute $\hat{m}_0(x_0)$, $\hat{m}_1(x_0)$
+#' @param x_t vector of values at which to compute $\hat{m}_1(\mathcal{T}(x_t))$
+#' @param x_m_name vector of names of the mediator variables
+#' @param mod_0 model $\hat{m}_0$
+#' @param mod_1 model $\hat{m}_1$
+#' @param pred_mod_0 prediction function for model $\hat{m}_0(\cdot)$
+#' @param pred_mod_1 prediction function for model $\hat{m}_1(\cdot)$
+#' @param return_x if `TRUE` (default) the mediator variables are returned in the table, as well as their transported values
+sate <- function(x_0, x_t, x_m_names, mod_0, mod_1, pred_mod_0, pred_mod_1, return_x = TRUE){
+  if(is.vector(x_0)){
+    # Univariate case
+    new_data <- tibble(!!x_m_names := x_0)
+  }else{
+    new_data <- x_0
+  }
+  if(is.vector(x_t)){
+    # Univariate case
+    new_data_t <- tibble(!!x_m_names := x_t)
+  }else{
+    new_data_t <- x_t
+  }
+  
+  # $\hat{m}_0(x_0)$
+  y_0 <- pred_mod_0(object = mod_0, newdata = new_data)
+  # $\hat{m}_1(x_0)$
+  y_1 <- pred_mod_1(object = mod_1, newdata = new_data)
+  # $\hat{m}_1(\mathcal{T}(x_0))$
+  y_1_t <- pred_mod_1(object = mod_1, newdata = new_data_t)
+  
+  scate_tab <- 
+    tibble(y_0 = y_0, y_1 = y_1, y_1_t = y_1_t,
+           CATE = y_1-y_0, SCATE = y_1_t-y_0)
+  
+  if(return_x){
+    new_data_t <- new_data_t %>% rename_all(~paste0(.x, "_t"))
+    scate_tab <- bind_cols(new_data, new_data_t, scate_tab)
+  }
+  scate_tab
+}
+```
+
+
+# Example with $n=4000$ for Smoker mothers and birth weight {#sec-example}
+
+Let us estimate the Sample Conditional Average Treatment Effect, using GAM models and a quantile-based method to transport the mediator variable. The outcome is the probability of having a natural birth, the treatment is whether the mothers smokes or not, and the mediator is the birth weight of the newborn.
+
+Let us estimate the SCATE using only a subset of 4,000 randomly drawn observations from both groups (treated = smoker mothers and non-treated = non-smoker mothers).
+
+First, we create the two sub-samples:
+```{r}
+base_0 <- base %>% filter(cig_rec == "No") %>% sample_n(4000)
+base_1 <- base %>% filter(cig_rec == "Yes") %>% sample_n(4000)
+```
+
+The, we can estimate $\color{couleur1}{\widehat{m}_0}$ or $\color{couleur2}{\widehat{m}_1}$:
+```{r}
+reg_univ_0 <- 
+    models_spline(target = "nonnatural_delivery",
+                  treatment_name = "cig_rec", 
+                  treatment = 0,
+                  x_m_name = "birth_weight",
+                  data = base_0, treatment_0 = "No", df = 3)
+reg_univ_1 <- 
+    models_spline(target = "nonnatural_delivery",
+                  treatment_name = "cig_rec", 
+                  treatment = 1,
+                  x_m_name = "birth_weight",
+                  data = base_1, treatment_1 = "Yes", df = 3)
+```
+
+
+We will estimate the SCATE at the following weight gains:
+```{r}
+w_0 <- seq(2000,4500,by=500)
+w_0
+```
+
+
+The corresponding transported values (quantile-based):
+```{r}
+trans_w_0 <- 
+    transport_quantile(x_0 = w_0, x_m_name = "birth_weight", 
+                       treatment_name = "cig_rec", 
+                       treatment_0 = "No", treatment_1 = "Yes",
+                       data = bind_rows(base_0, base_1))
+trans_w_0
+```
+Lastly, the SCATE computed at the different points, for this sample:
+
+```{r}
+sate(x_0 = w_0,
+         x_t = trans_w_0$x_t_quantile,
+         x_m_names = "birth_weight",
+         mod_0 = reg_univ_0,
+         mod_1 = reg_univ_1,
+         pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict) %>% 
+    mutate(size_n = 4000, x_m_name = "birth_weight", idx = row_number())
+```
+
+# Simulations
+
+Let us estimate the SCATE using different sizes of the samples ($4,000$ or $20,000$ or $100,000$).
+
+
+We can consider different treatments (whether the mother smokes or not, whether the mother is Black or not, and whether the newborn is a girl or a boy) and different mediator variables (newborn weight and mother's weight gain). We can define a function that wraps the codes presented in @sec-example in a single function.
+```{r}
+#' @param size_n
+#' @param w_0
+#' @param x_m_name name of the mediator variable
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+#' @param data data frame with both T=0 or T=1
+simul_univ <- function(size_n, w_0, target, x_m_name, treatment_name, treatment_0, treatment_1, data){
+  # Random sample of size `size_n` in each group
+  base_0 <- data %>% filter(!!sym(treatment_name) == treatment_0) %>% sample_n(size_n)
+  base_1 <- data %>% filter(!!sym(treatment_name) == treatment_1) %>% sample_n(size_n)
+  # Estimation of $\hat{m}_0()$
+  reg_univ_0 <- 
+    models_spline(target = target,
+                  treatment_name = treatment_name, 
+                  treatment = 0,
+                  x_m_name = x_m_name,
+                  data = base_0, treatment_0 = treatment_0, df = 3)
+  # Estimation of $\hat{m}_1()$
+  reg_univ_1 <- 
+    models_spline(target = target,
+                  treatment_name = treatment_name, 
+                  treatment = 1,
+                  x_m_name = x_m_name,
+                  data = base_1, treatment_1 = treatment_1, df = 3)
+  
+  # Transported values (quantile-based)
+  trans_w_0 <- 
+    transport_quantile(x_0 = w_0, x_m_name = x_m_name, 
+                       treatment_name = treatment_name, 
+                       treatment_0 = treatment_0, treatment_1 = treatment_1,
+                       data = bind_rows(base_0, base_1))
+  # SATE
+  cate_univ <-
+    sate(x_0 = w_0,
+         x_t = trans_w_0$x_t_quantile,
+         x_m_names = x_m_name,
+         mod_0 = reg_univ_0,
+         mod_1 = reg_univ_1,
+         pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict) %>% 
+    mutate(size_n = size_n, x_m_name = x_m_name, idx = row_number())
+  cate_univ
+}
+```
+
+This function will be evaluated 200 times for each sample size. At each time, a new random sample for both treated and non-treated will be drawn.
+```{r}
+nb_replicate <- 200
+```
+
+
+Let us run the simulations in parallel.
+```{r, eval=FALSE}
+library(parallel)
+ncl <- detectCores()-1
+cl <- makeCluster(ncl)
+invisible(clusterEvalQ(cl, library(tidyverse, warn.conflicts=FALSE, quietly=TRUE)))
+invisible(clusterEvalQ(cl, library(splines, warn.conflicts=FALSE, quietly=TRUE)))
+invisible(clusterEvalQ(cl, library(expm, warn.conflicts=FALSE, quietly=TRUE)))
+
+clusterExport(cl, c("models_spline", "model_spline_predict", "sate", "transport_quantile"))
+clusterExport(cl, c("base"))
+```
+
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+```{r, eval=FALSE}
+target         <- "nonnatural_delivery"
+treatment_name <- "cig_rec"
+x_m_name       <- "birth_weight"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+# Some values
+w_0 <- seq(2000,4500,by=500)
+
+cate_sim_smoker_bw <- 
+  pbapply::pblapply(rep(c(4000, 20000, 100000), each = nb_replicate), 
+                    simul_univ, cl = cl, 
+                    w_0 = w_0, target = target, x_m_name = x_m_name, 
+                    treatment_name = treatment_name, 
+                    treatment_0 = treatment_0, treatment_1 = treatment_1, 
+                    data = base)
+```
+
+The results can be saved:
+```{r, eval=FALSE}
+save(cate_sim_smoker_bw, file = "../output/simulations/cate_sim_smoker_bw.rda")
+```
+
+And then loaded:
+```{r}
+load("../output/simulations/cate_sim_smoker_bw.rda")
+```
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+```{r, eval=FALSE}
+target         <- "nonnatural_delivery"
+treatment_name <- "cig_rec"
+x_m_name       <- "wtgain"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+# Some values
+w_0 <- seq(5,55, by=10)
+
+cate_sim_smoker_wg <- 
+  pbapply::pblapply(rep(c(4000, 20000, 100000), each = nb_replicate), 
+                    simul_univ, cl = cl, 
+                    w_0 = w_0, target = target, x_m_name = x_m_name, 
+                    treatment_name = treatment_name, 
+                    treatment_0 = treatment_0, treatment_1 = treatment_1, 
+                    data = base)
+```
+
+The results can be saved:
+```{r, eval=FALSE}
+save(cate_sim_smoker_wg, file = "../output/simulations/cate_sim_smoker_wg.rda")
+```
+
+And then loaded:
+```{r}
+load("../output/simulations/cate_sim_smoker_wg.rda")
+```
+
+:::
+
+## $T$: Black
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+```{r, eval=FALSE}
+target         <- "nonnatural_delivery"
+treatment_name <- "black_mother"
+x_m_name       <- "birth_weight"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+# Some values
+w_0 <- seq(2000,4500,by=500)
+
+cate_sim_blackm_bw <- 
+  pbapply::pblapply(rep(c(4000, 20000, 100000), each = nb_replicate), 
+                    simul_univ, cl = cl, 
+                    w_0 = w_0, target = target, x_m_name = x_m_name, 
+                    treatment_name = treatment_name, 
+                    treatment_0 = treatment_0, treatment_1 = treatment_1, 
+                    data = base)
+```
+
+The results can be saved:
+```{r, eval=FALSE}
+save(cate_sim_blackm_bw, file = "../output/simulations/cate_sim_blackm_bw.rda")
+```
+
+And then loaded:
+```{r}
+load("../output/simulations/cate_sim_blackm_bw.rda")
+```
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+```{r, eval=FALSE}
+target         <- "nonnatural_delivery"
+treatment_name <- "black_mother"
+x_m_name       <- "wtgain"
+treatment_0    <- "No"
+treatment_1    <- "Yes"
+# Some values
+w_0 <- seq(5,55, by=10)
+
+cate_sim_blackm_wg <- 
+  pbapply::pblapply(rep(c(4000, 20000, 100000), each = nb_replicate), 
+                    simul_univ, cl = cl, 
+                    w_0 = w_0, target = target, x_m_name = x_m_name, 
+                    treatment_name = treatment_name, 
+                    treatment_0 = treatment_0, treatment_1 = treatment_1, 
+                    data = base)
+```
+
+The results can be saved:
+```{r, eval=FALSE}
+save(cate_sim_blackm_wg, file = "../output/simulations/cate_sim_blackm_wg.rda")
+```
+
+And then loaded:
+```{r}
+load("../output/simulations/cate_sim_blackm_wg.rda")
+```
+
+:::
+
+## $T$: Baby girl
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+```{r, eval=FALSE}
+target         <- "nonnatural_delivery"
+treatment_name <- "sex"
+x_m_name       <- "birth_weight"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+# Some values
+w_0 <- seq(2000,4500,by=500)
+
+cate_sim_sex_bw <- 
+  pbapply::pblapply(rep(c(4000, 20000, 100000), each = nb_replicate), 
+                    simul_univ, cl = cl, 
+                    w_0 = w_0, target = target, x_m_name = x_m_name, 
+                    treatment_name = treatment_name, 
+                    treatment_0 = treatment_0, treatment_1 = treatment_1, 
+                    data = base)
+```
+
+The results can be saved:
+```{r, eval=FALSE}
+save(cate_sim_sex_bw, file = "../output/simulations/cate_sim_sex_bw.rda")
+```
+
+And then loaded:
+```{r}
+load("../output/simulations/cate_sim_sex_bw.rda")
+```
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+```{r, eval=FALSE}
+target         <- "nonnatural_delivery"
+treatment_name <- "sex"
+x_m_name       <- "wtgain"
+treatment_0    <- "Male"
+treatment_1    <- "Female"
+# Some values
+w_0 <- seq(5,55, by=10)
+
+cate_sim_sex_wg <- 
+  pbapply::pblapply(rep(c(4000, 20000, 100000), each = nb_replicate), 
+                    simul_univ, cl = cl, 
+                    w_0 = w_0, target = target, x_m_name = x_m_name, 
+                    treatment_name = treatment_name, 
+                    treatment_0 = treatment_0, treatment_1 = treatment_1, 
+                    data = base)
+```
+
+The results can be saved:
+```{r, eval=FALSE}
+save(cate_sim_sex_wg, file = "../output/simulations/cate_sim_sex_wg.rda")
+```
+
+And then loaded:
+```{r}
+load("../output/simulations/cate_sim_sex_wg.rda")
+```
+
+:::
+
+:::
+
+
+Let us close the clusters:
+```{r, eval=FALSE}
+stopCluster(cl = cl)
+```
+
+
+## Results
+
+
+### Distribution of the transported values
+
+Let us plot the distribution of the transported values, given both the size sample $n$ and the value transported.
+
+```{r}
+#' @param res_simul results of the simulation
+#' @param size_n size of the sample used to make simulations 
+#'        (column `size_n` in the tables obtained in `res_simul`)
+#' @param x_m_name
+#' @param x_lim limits of the x-axis (and the y-axis)
+#' @param scale_factor_density scaling factor for the height of the densities
+#' @param offset_density offset for the densities
+#' @param arrow_length length of the arrow
+#' @param x_lab label for the x-axis
+plot_distrib_transported_val <- function(res_simul, size_n, x_m_name, x_lim, scale_factor_density, offset_density, arrow_length = unit(0.25, "inches"), x_lab){
+  x_m_name_t <- paste0(x_m_name, "_t")
+  
+  # Initial values and transported values, for the `size_n` simulations
+  val_t_sim <- 
+    bind_rows(res_simul) %>% 
+    filter(size_n == !!size_n) %>% 
+    select(!!sym(x_m_name), !!sym(x_m_name_t))
+  
+  # Points at which the SCATE were computed
+  w_0 <- unique(pull(val_t_sim, x_m_name))
+  
+  # Mean of the transported values in the simulations, for each point of interest
+  val_t_sim_mean <- 
+    val_t_sim %>% group_by(!!sym(x_m_name)) %>% 
+    summarise(mean_t = mean(!!sym(x_m_name_t)))
+  
+  # Estimation of the density of the transported values at each point of interest
+  val_t_sim_d <- 
+    val_t_sim %>% 
+    group_by(!!sym(x_m_name)) %>% 
+    nest() %>% 
+    mutate(density = map(data, ~density(pull(.x, x_m_name_t))))
+  
+  # Plot
+  plot(NULL,xlab=x_lab,
+       ylab="", axes=FALSE,
+       xlim = x_lim, ylim = x_lim)
+  segments(x_lim[1],x_lim[1], x_lim[2], x_lim[2],col=couleur3)
+  points(w_0, w_0, pch = 19, col = couleur3)
+  arrows(w_0, w_0 , w_0, val_t_sim_mean$mean_t, col=couleur3, length = arrow_length)
+  axis(1)
+  axis(2)
+  for(i in 1:length(w_0)){
+    polygon(w_0[i] + offset_density + val_t_sim_d$density[[i]]$y*scale_factor_density,
+            val_t_sim_d$density[[i]]$x,
+            col=scales::alpha(couleur1,.4),border=NA)
+  }
+}
+```
+
+
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight of a newborn infant when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is a smoker or not.
+#| label: fig-simul-density-smoker-bw
+res_simul <- cate_sim_smoker_bw
+x_lim <- c(1800, 4900)
+scale_factor_density <- 10000
+x_m_name <- "birth_weight"
+x_lab <- "Weight of the baby (mother non-smoker → smoker)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density,
+                             offset_density = 100, x_lab = x_lab, unit(0.05, "inches"))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density, 
+                             offset_density = 100, x_lab = x_lab, unit(0.05, "inches"))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density, 
+                             offset_density = 100, x_lab = x_lab, unit(0.05, "inches"))
+```
+
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight gain of the mother when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is a smoker or not.
+#| label: fig-simul-density-smoker-wg
+
+res_simul <- cate_sim_smoker_wg
+x_lim <- c(0, 60)
+scale_factor_density <- 100
+x_m_name <- "wtgain"
+x_lab <- "Weight gain of the mother (mother non-smoker → smoker)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density, 
+                             offset_density = 0.5, x_lab = x_lab)
+plot_distrib_transported_val(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density,
+                             offset_density = 0.5, x_lab = x_lab)
+plot_distrib_transported_val(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density,
+                             offset_density = 0.5, x_lab = x_lab)
+```
+
+
+:::
+
+## $T$: Black
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight of a newborn infant when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is Black or not.
+#| label: fig-simul-density-blackm-bw
+res_simul <- cate_sim_blackm_bw
+x_lim <- c(1800, 4900)
+scale_factor_density <- 10000
+x_m_name <- "birth_weight"
+x_lab <- "Weight of the baby (mother non-Black → Black)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density,
+                             offset_density = 100, x_lab = x_lab, unit(0.05, "inches"))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density, 
+                             offset_density = 100, x_lab = x_lab, unit(0.05, "inches"))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density, 
+                             offset_density = 100, x_lab = x_lab, unit(0.05, "inches"))
+```
+
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight gain of the mother when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is Black or not.
+#| label: fig-simul-density-blackm-wg
+
+res_simul <- cate_sim_blackm_wg
+x_lim <- c(0, 60)
+scale_factor_density <- 100
+x_m_name <- "wtgain"
+x_lab <- "Weight gain of the mother (mother non-Black → Black)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density, 
+                             offset_density = 0.5, x_lab = x_lab)
+plot_distrib_transported_val(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density,
+                             offset_density = 0.5, x_lab = x_lab)
+plot_distrib_transported_val(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density,
+                             offset_density = 0.5, x_lab = x_lab)
+```
+
+:::
+
+
+## $T$: Baby girl
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight of a newborn infant when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the newborn is a girl or not.
+#| label: fig-simul-density-sex-bw
+res_simul <- cate_sim_sex_bw
+x_lim <- c(1800, 4900)
+scale_factor_density <- 10000
+x_m_name <- "birth_weight"
+x_lab <- "Weight of the baby (baby boy → girl)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density,
+                             offset_density = 100, x_lab = x_lab, unit(0.05, "inches"))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density, 
+                             offset_density = 100, x_lab = x_lab, unit(0.05, "inches"))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density, 
+                             offset_density = 100, x_lab = x_lab, unit(0.05, "inches"))
+```
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight gain of the mother when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the newborn is a girl or not.
+#| label: fig-simul-density-sex-wg
+
+res_simul <- cate_sim_sex_wg
+x_lim <- c(0, 60)
+scale_factor_density <- 100
+x_m_name <- "wtgain"
+x_lab <- "Weight gain of the mother (baby boy → girl)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+plot_distrib_transported_val(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density, 
+                             offset_density = 0.5, x_lab = x_lab)
+plot_distrib_transported_val(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density,
+                             offset_density = 0.5, x_lab = x_lab)
+plot_distrib_transported_val(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                             x_lim = x_lim, scale_factor_density = scale_factor_density,
+                             offset_density = 0.5, x_lab = x_lab)
+```
+
+:::
+
+
+:::
+
+
+Let us plot the distributions differently. We define a function that estimates the density of the transported values and returns both the estimated values and their range.
+```{r}
+compute_density <- function(x){
+  d <- density(x)
+  x_min <- min(d$x)
+  x_max <- max(d$x)
+  y_min <- min(d$y)
+  y_max <- max(d$y)
+  limits <- tibble(x_min = x_min, x_max = x_max, y_min = y_min, y_max = y_max)
+  val <- tibble(x = d$x, y = d$y)
+  list(val = val, limits = limits)
+}
+```
+
+Then, we can plot the estimated densities depending on the sample size, for each value of interest of the mediator variable.
+```{r}
+#' @param res_simul results of the simulation
+#' @param x_m_name mediator variable
+#' @param x_m_name_label label of the mediator
+#' @param x_lab label for the x-axis
+plot_distrib_transported_val <- function(res_simul, x_m_name, x_m_name_label, x_lab){
+  x_m_name_t <- paste0(x_m_name, "_t")
+  # Points of interest
+  w_0 <- unique(pull(bind_rows(res_simul), !!sym(x_m_name)))
+  # Simulation results
+  val_t_sim <- 
+    bind_rows(res_simul) %>% 
+    mutate(size_n = factor(size_n, levels = c(4000, 20000, 100000), labels = c("4,000", "20,000", "100,000")))
+  # Average of the transported values, for each sample size and each point of interest
+  mean_t_df <- 
+    val_t_sim %>% 
+    group_by(size_n, !!sym(x_m_name)) %>% 
+    summarise(!!sym(x_m_name_t) := mean(!!sym(x_m_name_t)))
+  
+  
+  # Densities of the transported values over the simulations,
+  # for each value of the mediator variable and each size sample
+  densities <- 
+    val_t_sim %>% group_by(!!sym(x_m_name), size_n) %>% 
+    nest() %>% 
+    mutate(density = map(data, ~compute_density(pull(.x, x_m_name_t))))
+  
+  # 3x2 plot matrix + 1 legend at the bottom
+  layout(mat = matrix(c(1,2,3,4,5,6,7,7,7),nrow = 3,ncol = 3,byrow = TRUE),
+         heights = c(0.4,0.4,0.2))
+  # loop over the different points of the mediator variable
+  for(i in 1:length(w_0)){
+    # densities of the transported values for the current point
+    val_t_sim_i <- densities %>% filter(!!sym(x_m_name) == w_0[i])
+    
+    # limits of the densities values (over the different sample sizes)
+    limits <- 
+      val_t_sim_i %>% 
+      mutate(limits = map(density, "limits")) %>% 
+      unnest(cols = limits) %>% 
+      ungroup() %>% 
+      summarise(
+        x_min = min(x_min),
+        x_max = max(x_max),
+        y_min = min(y_min),
+        y_max = max(y_max)
+      )
+    par(mar=c(5.1,4.1, 4.1, 2.1))
+    plot(NULL, xlab = x_lab,
+         main = paste0(x_m_name_label, " = ", scales::number(w_0[i], big.mark = ",")),
+         ylab = "", axes = FALSE,
+         xlim = c(min(limits$x_min, w_0[i]), max(limits$x_max, w_0[i])),
+         ylim = c(limits$y_min, limits$y_max))
+    axis(1)
+    # point of interest
+    abline(v = w_0[i], lty = 2, col = "grey")
+    
+    for(j in 1:nrow(val_t_sim_i)){
+      val_t_sim_i_j <- 
+        val_t_sim_i %>% ungroup() %>% slice(j) %>% 
+        mutate(density = map(density, "val")) %>% 
+        unnest(cols = density)
+      # Mean of trransported values
+      mean_t_i_j <- mean_t_df %>% 
+        filter(size_n == unique(val_t_sim_i_j$size_n), !!sym(x_m_name) == w_0[i]) %>% 
+        pull(!!sym(x_m_name_t))
+      abline(v = mean_t_i_j, col = colr1[j], lty = 2)
+      # density
+      polygon(x = val_t_sim_i_j$x, y = val_t_sim_i_j$y, col=scales::alpha(colr1[j],.4),border=NA)
+    }  
+  }
+  par(mar=c(0,0,1,0))
+  plot(1, type = "n", axes=FALSE, xlab="", ylab="")
+  plot_colors <- scales::alpha(colr1[1:3],.4)
+  legend(x = "top", inset = 0,
+         legend = c("4,000", "20,000", "100,000"), col = plot_colors, lwd = 4, cex = .8, horiz = TRUE)
+}
+```
+
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight of a newborn infant depending on the sample size $n$, and when $T$ indicates whether the mother is a smoker or not.
+#| label: fig-simul-density-smoker-bw-2
+plot_distrib_transported_val(res_simul = cate_sim_smoker_bw, x_m_name = "birth_weight",
+                             x_m_name_label = "Birth weight", 
+                             x_lab = "Weight of the baby (mother non-smoker → smoker)")
+```
+
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight gain of the mother depending on the sample size $n$, and when $T$ indicates whether the mother is a smoker or not.
+#| label: fig-simul-density-smoker-wg-2
+plot_distrib_transported_val(res_simul = cate_sim_smoker_wg, x_m_name = "wtgain",
+                             x_m_name_label = "Weight gain", 
+                             x_lab = "Weight gain of the mother (mother non-smoker → smoker)")
+```
+
+
+:::
+
+## $T$: Black
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight of a newborn infant depending on the sample size $n$, and when $T$ indicates whether the mother is Black or not.
+#| label: fig-simul-density-blackm-bw-2
+plot_distrib_transported_val(res_simul = cate_sim_blackm_bw, x_m_name = "birth_weight",
+                             x_m_name_label = "Birth weight", 
+                             x_lab = "Weight of the baby (non-Black mother → Black mother)")
+```
+
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight gain of the mother depending on the sample size $n$, and when $T$ indicates whether the mother is Black or not.
+#| label: fig-simul-density-blackm-wg-2
+plot_distrib_transported_val(res_simul = cate_sim_blackm_wg, x_m_name = "wtgain",
+                             x_m_name_label = "Weight gain", 
+                             x_lab = "Weight gain of the mother (non-Black mother → Black mother)")
+```
+
+:::
+
+
+## $T$: Baby girl
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight of a newborn infant depending on the sample size $n$, and when $T$ indicates whether the newborn is a girl or not.
+#| label: fig-simul-density-sex-bw-2
+
+plot_distrib_transported_val(res_simul = cate_sim_sex_bw, x_m_name = "birth_weight",
+                             x_m_name_label = "Birth weight", 
+                             x_lab = "Weight of the baby (baby boy → baby girl)")
+```
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight gain of the mother depending on the sample size $n$, and when $T$ indicates whether the newborn is a girl or not.
+#| label: fig-simul-density-sex-wg-2
+plot_distrib_transported_val(res_simul = cate_sim_sex_wg, x_m_name = "wtgain",
+                             x_m_name_label = "Weight gain", 
+                             x_lab = "Weight gain of the mother (baby boy → baby girl)")
+```
+
+:::
+
+:::
+
+
+Same kind of representation, with ggplot2.
+
+```{r}
+#' @param res_simul results of the simulation
+#' @param x_m_name mediator variable
+#' @param x_m_name_label label of the mediator
+#' @param x_lab label for the x-axis
+plot_distrib_transported_val_2 <- function(res_simul, x_m_name, x_m_name_label, x_lab, type = c("density", "histogram")){
+  x_m_name_t <- paste0(x_m_name, "_t")
+  # transported values (simulations)
+  val_t_sim <- 
+    bind_rows(res_simul) %>% 
+    mutate(size_n = factor(size_n, levels = c(4000, 20000, 100000), labels = c("4,000", "20,000", "100,000")))
+  
+  # Points of interest
+  w_0 <- unique(pull(bind_rows(val_t_sim), !!sym(x_m_name)))
+  
+  # Average of the transported values for each sample size and each point of interest
+  mean_t_df <- 
+    bind_rows(val_t_sim) %>% 
+    group_by(size_n, !!sym(x_m_name)) %>% 
+    summarise(!!sym(x_m_name_t) := mean(!!sym(x_m_name_t)))
+  
+  # Labels for faceting
+  w_0_labels <- paste0(x_m_name_label, "=", scales::number(w_0, big.mark = ","))
+  names(w_0_labels) <- w_0
+
+  p <- 
+    ggplot(data = val_t_sim) +
+    geom_vline(data = mean_t_df, mapping = aes(xintercept = !!sym(x_m_name_t), colour = size_n), linetype = "dashed")
+  
+  if(type == "density") p <- p + 
+    geom_density(mapping = aes(x = !!sym(x_m_name_t), fill = size_n), alpha = .8, colour = NA)
+  if(type == "histogram") p <- p + 
+    geom_histogram(mapping = aes(x = !!sym(x_m_name_t), fill = size_n), alpha = .8, colour = NA, position = "identity")
+  
+  p <- p + 
+    geom_vline(data = tibble(!!sym(x_m_name) := w_0), mapping = aes(xintercept = !!sym(x_m_name)), colour = "grey", linetype = "dashed") +
+    facet_wrap(vars(!!sym(x_m_name)), scales = "free", labeller = labeller(!!sym(x_m_name) := w_0_labels), ncol = 2) +
+    labs(x = x_lab, y = NULL) +
+    scale_fill_manual("Sample size", values = c("4,000" = colr1[1], "20,000" = colr1[2], "100,000" = colr1[3])) +
+    scale_colour_manual("Sample size", values = c("4,000" = colr1[1], "20,000" = colr1[2], "100,000" = colr1[3])) +
+    theme_minimal() +
+    theme(legend.position = "bottom", axis.text.y = element_blank(), strip.text = element_text(face = "bold"))
+  p
+}
+```
+
+
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight of a newborn infant depending on the sample size $n$, and when $T$ indicates whether the mother is a smoker or not.
+#| label: fig-simul-density-smoker-bw-3
+plot_distrib_transported_val_2(res_simul = cate_sim_smoker_bw, x_m_name = "birth_weight",
+                             x_m_name_label = "Birth weight", 
+                             x_lab = "Weight of the baby (mother non-smoker → smoker)",
+                             type = "density")
+```
+
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight gain of the mother depending on the sample size $n$, and when $T$ indicates whether the mother is a smoker or not.
+#| label: fig-simul-density-smoker-wg-3
+
+plot_distrib_transported_val_2(res_simul = cate_sim_smoker_wg, x_m_name = "wtgain",
+                             x_m_name_label = "Weight gain", 
+                             x_lab = "Weight gain of the mother (mother non-smoker → smoker)",
+                             type = "histogram")
+```
+
+
+:::
+
+## $T$: Black
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight of a newborn infant depending on the sample size $n$, and when $T$ indicates whether the mother is Black or not.
+#| label: fig-simul-density-blackm-bw-3
+
+plot_distrib_transported_val_2(res_simul = cate_sim_blackm_bw, x_m_name = "birth_weight",
+                             x_m_name_label = "Birth weight", 
+                             x_lab = "Weight of the baby (non-Black mother → Black mother)",
+                             type = "density")
+```
+
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight gain of the mother depending on the sample size $n$, and when $T$ indicates whether the mother is Black or not.
+#| label: fig-simul-density-blackm-wg-3
+plot_distrib_transported_val_2(res_simul = cate_sim_blackm_wg, x_m_name = "wtgain",
+                             x_m_name_label = "Weight gain", 
+                             x_lab = "Weight gain of the mother (non-Black mother → Black mother)",
+                             type = "histogram")
+```
+
+:::
+
+
+## $T$: Baby girl
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight of a newborn infant depending on the sample size $n$, and when $T$ indicates whether the newborn is a girl or not.
+#| label: fig-simul-density-sex-bw-3
+
+
+plot_distrib_transported_val_2(res_simul = cate_sim_sex_bw, x_m_name = "birth_weight",
+                             x_m_name_label = "Birth weight", 
+                             x_lab = "Weight of the baby (baby boy → baby girl)",
+                             type = "density")
+```
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Distribution of $\mathcal{T}(x)$ when $x$ is the weight gain of the mother depending on the sample size $n$, and when $T$ indicates whether the newborn is a girl or not.
+#| label: fig-simul-density-sex-wg-3
+plot_distrib_transported_val_2(res_simul = cate_sim_sex_wg, x_m_name = "wtgain",
+                             x_m_name_label = "Weight gain", 
+                             x_lab = "Weight gain of the mother (baby boy → baby girl)",
+                             type = "histogram")
+```
+
+:::
+
+:::
+
+
+## SCATE with GAM, quantile-based transport
+
+Let us now display the distribution of $\text{CATE}(x)$ and $\text{SCATE}(x)$ obtained in the simulations.
+
+
+```{r}
+#' @param res_simul results of the simulation
+#' @param size_n size of the sample used to make simulations 
+#'        (column `size_n` in the tables obtained in `res_simul`)
+#' @param x_m_name
+#' @param x_lim limits of the x-axis
+#' @param y_lim limits of the y-axis
+#' @param offset_density offset for the boplots
+#' @param x_lab label for the x-axis
+boxplot_cate_simul <- function(res_simul, size_n, x_m_name, x_lim, y_lim, scale_factor_density, offset_density, x_lab){
+  x_m_name_t <- paste0(x_m_name, "_t")
+  
+  # Initial values and transported values, for the `size_n` simulations
+  val_t_sim <- 
+    bind_rows(res_simul) %>% 
+    filter(size_n == !!size_n) %>% 
+    select(!!sym(x_m_name), CATE, SCATE)
+  
+  # Points at which the SCATE were computed
+  w_0 <- unique(pull(bind_rows(res_simul), !!sym(x_m_name)))
+  
+  plot(NULL, xlab = x_lab,
+       ylab = paste0("CATE estimate, n=", scales::number(size_n, big.mark = ",")), 
+       axes=FALSE,
+       xlim=x_lim, ylim = y_lim)
+  axis(1)
+  axis(2)
+  # Loop over the points of interest
+  for(i in 1:length(w_0)){
+    cate_i <- pull(val_t_sim %>% filter(!!sym(x_m_name) == w_0[i]), CATE)
+    scate_i <- pull(val_t_sim %>% filter(!!sym(x_m_name) == w_0[i]), SCATE)
+    
+    # Boxplot for CATE
+    boxplot(cate_i, add = TRUE,
+            at = w_0[i] - offset_boxplot, border = scales::alpha(couleur3, .25), axes = FALSE)
+    points(w_0[i] - offset_boxplot, mean(cate_i), pch = 19, col = scales::alpha(couleur3,.25))
+    # Boxplot for SCATE
+    boxplot(scate_i, add = TRUE,
+            at = w_0[i] + offset_boxplot, border = couleur3, axes = FALSE)
+    points(w_0[i] + offset_boxplot, mean(scate_i), pch = 19, col = couleur3)
+  }
+}
+```
+
+
+::: {.panel-tabset}
+
+## $T$: Smoker
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight of a newborn infant when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is a smoker or not.
+#| label: fig-simul-boxplot-smoker-bw
+
+res_simul <- cate_sim_smoker_bw
+x_lim <- c(1800, 4900)
+y_lim <- c(-.2, .2)
+offset_boxplot <- 50
+x_m_name <- "birth_weight"
+x_lab <- "Weight of the baby (mother non-smoker → smoker)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+boxplot_cate_simul(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+```
+
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight gain of the mother when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is a smoker or not.
+#| label: fig-simul-boxplot-smoker-wg
+
+res_simul <- cate_sim_smoker_wg
+x_lim <- c(0, 60)
+y_lim <- c(-.05, .05)
+offset_boxplot <- 1
+x_m_name <- "wtgain"
+x_lab <- "Weight gain of the mother (mother non-smoker → smoker)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+boxplot_cate_simul(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+```
+
+
+:::
+
+## $T$: Black
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight of a newborn infant when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is Black or not.
+#| label: fig-simul-boxplot-blackm-bw
+
+res_simul <- cate_sim_blackm_bw
+x_lim <- c(1800, 4900)
+y_lim <- c(-.3, .3)
+offset_boxplot <- 50
+x_m_name <- "birth_weight"
+x_lab <- "Weight of the baby (mother non-Black → Black)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+boxplot_cate_simul(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+```
+
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight gain of the mother when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is Black or not.
+#| label: fig-simul-boxplot-blackm-wg
+
+res_simul <- cate_sim_blackm_wg
+x_lim <- c(0, 60)
+y_lim <- c(-.1, .1)
+offset_boxplot <- 1
+x_m_name <- "wtgain"
+x_lab <- "Weight gain of the mother (mother non-Black → Black)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+boxplot_cate_simul(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+```
+
+:::
+
+
+## $T$: Baby girl
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight of a newborn infant when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the newborn is a girl or not.
+#| label: fig-simul-boxplot-sex-bw
+res_simul <- cate_sim_sex_bw
+x_lim <- c(1800, 4900)
+y_lim <- c(-.2, .2)
+offset_boxplot <- 50
+x_m_name <- "birth_weight"
+x_lab <- "Weight of the baby (baby boy → girl)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+boxplot_cate_simul(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+```
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight gain of the mother when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the newborn is a girl or not.
+#| label: fig-simul-boxplot-sex-wg
+
+res_simul <- cate_sim_sex_wg
+x_lim <- c(0, 60)
+y_lim <- c(-.05, .05)
+offset_boxplot <- 1
+x_m_name <- "wtgain"
+x_lab <- "Weight gain of the mother (baby boy → girl)"
+
+layout(mat = matrix(c(1,2,3), ncol=1))
+boxplot_cate_simul(res_simul = res_simul,size_n = 4000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 20000, x_m_name = x_m_name, 
+                   x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+boxplot_cate_simul(res_simul = res_simul,size_n = 100000, x_m_name = x_m_name, 
+                  x_lim = x_lim, y_lim = y_lim, scale_factor_density = scale_factor_density, 
+                   offset_density = 0.5, x_lab = x_lab)
+```
+
+:::
+
+
+:::
+
+
+Let us get the same kind of graphs with {ggplot2}.
+
+```{r}
+#' @param res_simul results of the simulation
+#'        (column `size_n` in the tables obtained in `res_simul`)
+#' @param x_m_name
+#' @param x_lab label for the x-axis
+boxplot_cate_simul_2 <- function(res_simul, x_m_name, x_lab){
+  x_m_name_t <- paste0(x_m_name, "_t")
+  # Labels for faceting
+  val_sim <- bind_rows(res_simul)
+  sample_sizes <- unique(val_sim$size_n)
+  size_labels <- paste0("n=", scales::number(sample_sizes, big.mark = ","))
+  names(size_labels) <- sample_sizes
+  
+  val_sim %>% 
+    select(!!sym(x_m_name), CATE, SCATE, size_n) %>% 
+    pivot_longer(cols = c(CATE, SCATE)) %>% 
+    ggplot(data = .) +
+    geom_violin(mapping = aes(x = factor(!!sym(x_m_name)), y = value, fill = name)) +
+    scale_fill_manual(NULL, values = c("CATE" = scales::alpha(couleur3,.25), "SCATE" = couleur3)) +
+    labs(x = x_lab, y = "Conditional Average Treatment Effect") +
+    theme_minimal() +
+    theme(legend.position = "bottom", strip.text = element_text(face = "bold")) +
+    facet_wrap(~size_n, scales = "free", labeller = labeller(size_n = size_labels), ncol = 1)
+}
+```
+
+
+::: {.panel-tabset}
+
+
+## $T$: Smoker
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight of a newborn infant when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is a smoker or not.
+#| label: fig-simul-boxplot-smoker-bw-2
+boxplot_cate_simul_2(res_simul = cate_sim_smoker_bw, 
+                     x_m_name = "birth_weight", 
+                     x_lab = "Weight of the baby (mother non-smoker → smoker)")
+```
+
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight gain of the mother when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is a smoker or not.
+#| label: fig-simul-boxplot-smoker-wg-2
+boxplot_cate_simul_2(res_simul = cate_sim_smoker_wg, 
+                     x_m_name = "wtgain", 
+                     x_lab = "Weight gain of the mother (mother non-smoker → smoker)")
+```
+
+
+:::
+
+## $T$: Black
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight of a newborn infant when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is Black or not.
+#| label: fig-simul-boxplot-blackm-bw-2
+boxplot_cate_simul_2(res_simul = cate_sim_blackm_bw, 
+                     x_m_name = "birth_weight", 
+                     x_lab = "Weight of the baby (mother non-Black → Black)")
+```
+
+
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight gain of the mother when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the mother is Black or not.
+#| label: fig-simul-boxplot-blackm-wg-2
+boxplot_cate_simul_2(res_simul = cate_sim_blackm_wg, 
+                     x_m_name = "wtgain", 
+                     x_lab = "Weight gain of the mother (mother non-Black → Black)")
+```
+
+:::
+
+
+## $T$: Baby girl
+
+::: {.panel-tabset}
+
+### $\boldsymbol{x}^m$: Newborn weight
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight of a newborn infant when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the newborn is a girl or not.
+#| label: fig-simul-boxplot-sex-bw-2
+boxplot_cate_simul_2(res_simul = cate_sim_sex_bw, 
+                     x_m_name = "birth_weight", 
+                     x_lab = "Weight of the baby (baby boy → girl)")
+```
+
+### $\boldsymbol{x}^m$: Mother's weight gain
+
+
+
+```{r}
+#| code-fold: true
+#| code-summary: "Show the codes used to create the plot"
+#| fig-cap: Boxplot of the estimation of <span style="color:#046C9A40">CATE$(x)$</span> and <span style="color:#046C9A">SCATE$(x)$</span> with two GAM models when $x$ is the weight gain of the mother when $n$ goes to $4,000$ (on top) to $20,000$ (in the middle) and $100,000$ (at the bottom), and when $T$ indicates whether the newborn is a girl or not.
+#| label: fig-simul-boxplot-sex-wg-2
+boxplot_cate_simul_2(res_simul = cate_sim_sex_wg, 
+                     x_m_name = "wtgain", 
+                     x_lab = "Weight gain of the mother (baby boy → girl)")
+```
+
+:::
+
+
+:::
+

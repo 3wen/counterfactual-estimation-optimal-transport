@@ -1,0 +1,758 @@
+---
+title: "Optimal Transport for Counterfactual Estimation: A Method for Causal Inference"
+subtitle: "Online Appendix: short examples"
+pdf-engine: lualatex
+fontsize: 9pt
+link-citations: true
+from: markdown+emoji
+author: 
+  - Arthur Charpentier
+  - Emmanuel Flachaire
+  - Ewen Gallic
+lang: en
+crossref:
+  title-delim: ". "
+toc: true
+format:
+  html:
+    code-fold: false
+    code-summary: "Show the R codes"
+    number-sections: true
+    html-math-method: mathjax
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+    include-in-header:
+      - assets/colors.tex
+fig-cap-location: top
+tbl-cap-location: top
+execute:
+  echo: true
+  cache: true
+bibliography: ../References/biblio.bib
+self-contained: true
+warning: false
+title-block-banner: true
+---
+
+```{r optn, echo=FALSE, include=TRUE, message=FALSE, warning=FALSE, cache=FALSE}
+library(tidyverse)
+library(wesanderson)
+library(car)
+library(transport)
+library(splines)
+library(mgcv)
+library(expm)
+library(tidyverse)
+
+colorize <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    
+    if(!str_detect(substitute(color), "^#")){
+      color <- deparse(substitute(color))
+    }
+    
+    sprintf("\\textcolor{%s}{%s}", color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'>%s</span>", color,
+      x)
+  } else x
+}
+
+library(wesanderson)
+colr1 <- wes_palette("Darjeeling1")
+colr2 <- wes_palette("Darjeeling2")
+couleur1 <- colr1[2] #00a389
+couleur2 <- colr1[4] #ff7c00
+couleur3 <- colr2[2] #006e9e
+coul1 <- colr1[1]
+coul2 <- colr1[3]
+
+CLR <- c(hcl.colors(16,palette="Blues"),rev(hcl.colors(16,palette="Reds")))
+col_neg <- CLR[10]
+col_pos <- CLR[24]
+```
+
+::: {.hidden}
+
+$$
+\usepackage{dsfont}
+\usepackage{xcolor}
+\require{mathtools}
+\definecolor{bayesred}{RGB}{147, 30, 24}
+\definecolor{bayesblue}{RGB}{32, 35, 91}
+\definecolor{bayesorange}{RGB}{218, 120, 1}
+\definecolor{grey}{RGB}{128, 128, 128}
+\definecolor{couleur1}{RGB}{0,163,137}
+\definecolor{couleur2}{RGB}{255,124,0}
+\definecolor{couleur3}{RGB}{0, 110, 158}
+\definecolor{coul1}{RGB}{255,37,0}
+\definecolor{coul2}{RGB}{242,173,0}
+\definecolor{col_neg}{RGB}{155, 191, 221}
+\definecolor{col_pos}{RGB}{255, 128, 106}
+{\color{bayesorange} P (\text{H} \mid \text{E})} = \frac
+{{\color{bayesred} P(\text{H})} \times 
+{\color{bayesblue}P(\text{E} \mid \text{H})}}
+{\color{grey} {P(\text{E})}}
+$$
+
+:::
+
+
+::: {.callout-note}
+
+## Content of the Notebook
+
+This online appendix provides R codes to apply the methods presented in the companion paper (@charpentier2023transport).
+
+
+We would like to measure the effect of a treatment variable $T$ on the probability of observing a binary outcome $y$, depending on a binary treatment $T$. The outcome is assumed to depend other variables $\boldsymbol{x}^m$ that are also influenced by the treatment; these variable are mediators.
+
+
+Two short examples are provided in this notebook: one in which there is only one mediator (@sec-univariate) and one where we consider two mediators (@sec-multivariate).
+
+:::
+
+
+# Data {#sec-data}
+
+To illustrate the methods, we rely on the _Linked Birth/Infant Death Cohort Data_ (2013 cohort). The CSV files for the 2013 cohort were downloaded from the NBER collection of [Birth Cohort Linked Birth and Infant Death Data](http://www.cdc.gov/nchs/linked.htm) of the [National Vital Statistics System](http://www.cdc.gov/nchs/nvss.htm) of the [National Center for Health Statistics](http://www.cdc.gov/nchs/nvss.htm), on the [NBER](https://www.nber.org/research/data/linked-birthinfant-death-cohort-data) website. We formated the data (see [./births_stats.html](./births_stats.html)).
+
+Let us load the birth data.
+```{r}
+library(tidyverse)
+load("../data/births.RData")
+```
+
+Then, we can only keep a subsample of variables to illustrate the method.
+```{r}
+base <- 
+  births %>% 
+  mutate(
+    black_mother = mracerec == "Black",
+    nonnatural_delivery = rdmeth_rec != "Vaginal"
+  ) %>% 
+  select(
+    sex, dbwt, cig_rec, wtgain, 
+    black_mother, nonnatural_delivery,
+    mracerec, rdmeth_rec
+  ) %>% 
+  mutate(
+    cig_rec = replace_na(cig_rec, "Unknown or not stated"),
+    black_mother = ifelse(black_mother, yes = "Yes", no = "No"),
+    is_girl = ifelse(sex == "Female", yes = "Yes", no = "No")
+  ) %>% 
+  labelled::set_variable_labels(
+    black_mother = "Is the mother Black?",
+    is_girl = "Is the newborn a girl?",
+    nonnatural_delivery = "Is the delivery method non-natural?"
+  ) %>% 
+  rename(birth_weight = dbwt)
+base
+```
+
+The variables that were kept are the following:
+
+- `sex`: sex of the newborn
+- `birth_weight`: Birth Weight (in Grams)
+- `cig_rec`: mother smokes cigarettes
+- `wtgain`: mother weight gain
+- `mracerec`: mother's race
+- `black_mother`: is mother black?
+- `rdmeth_rec`: delivery method
+- `nonnatural_delivery`: is the delivery method non-natural?
+
+Then, let us discard individuals with missing values.
+
+```{r}
+base <- 
+  base %>% 
+  filter(
+    !is.na(birth_weight),
+    !is.na(wtgain),
+    !is.na(nonnatural_delivery),
+    !is.na(black_mother)
+  )
+```
+
+
+Let us define some colours for later use:
+```{r}
+library(wesanderson)
+colr1 <- wes_palette("Darjeeling1")
+colr2 <- wes_palette("Darjeeling2")
+couleur1 <- colr1[2]
+couleur2 <- colr1[4]
+couleur3 <- colr2[2]
+
+coul1 <- "#882255"
+coul2 <- "#DDCC77"
+```
+
+
+We need to load some packages.
+```{r}
+library(car)
+library(transport)
+library(splines)
+library(mgcv)
+library(expm)
+library(tidyverse)
+```
+
+# Univariate Case {#sec-univariate}
+
+Let us first consider the univariate case.
+
+## Objective
+
+The outcome is assumed to depend on the treatment and on a single mediator variable $\boldsymbol{x}^m$ (the latter is assumed to be also influenced by the treatment).
+
+| Variable | Name | Description |
+| :------- | :--- | :---------- |
+| Output ($y$) | `nonnatural_delivery`| Probability of having a non-natural delivery |
+| Treatment ($T$) | `cig_rec` | Whether the `r colorize("mother smokes", couleur2)` $\color{couleur2}{t=1}$ `r colorize("or not", couleur1)` $\color{couleur1}{t=0}$ |
+| Mediator ($\boldsymbol{x}^m$) | `birth_weight` | Birth weight of the newborn |
+
+
+Let us print some summary statistics of the variables considered.
+
+```{r}
+#| tbl-cap: Summary statistics for the observations
+#| label: tbl-summary-stat-univ
+library(gtsummary)
+base %>% 
+  select(nonnatural_delivery, cig_rec, birth_weight) %>% 
+  tbl_summary(
+    by = cig_rec,
+    type = all_continuous() ~ "continuous2",
+    statistic = list(
+      all_continuous() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})"),
+      all_categorical() ~ "{n} ({p}%)"),
+    digits = list(
+      all_continuous() ~ 2,
+      all_categorical() ~ 0
+    ),
+    missing_text = "Missing value"
+  ) %>% 
+  add_p() %>% 
+  add_overall(col_label = "Whole sample") %>% 
+  modify_header(label ~ "**Variable**") %>% 
+  modify_spanning_header(c("stat_1", "stat_2") ~ "**Mother is a smoker**") %>% 
+  add_stat_label(
+    label = list(
+      all_continuous() ~ c("Mean (Std)", "Median (IQR)"),
+      all_categorical() ~ "n (%)"
+    )
+  )
+```
+
+
+
+::: {.callout-tip}
+
+
+## Sample Conditional Average Treatment Effect: $\text{SCATE}(\boldsymbol{x})$
+
+Consider two models, $\color{couleur1}{\widehat{m}_0(x)}$ and $\color{couleur2}{\widehat{m}_1(x)}$, that estimate, respectively, $\color{couleur1}{\mathbb{E}[Y|X=x,T=0]}$ and  $\color{couleur2}{\mathbb{E}[Y|X=x,T=1]}$,
+$$
+\text{SCATE}(x)=\color{couleur2}{\widehat{m}_1}\big(\widehat{\mathcal{T}}(x)\big)\color{black}{} - \color{couleur1}{\widehat{m}_0}\big(x\big)
+$$
+where $\widehat{\mathcal{T}}(\cdot)$ is a transport function:
+
+- if we consider a quantile-based matching, $\widehat{\mathcal{T}}(x)= \color{couleur2}{\widehat{F}_1^{-1}}\color{black}{}\circ \color{couleur1}{\widehat{F}_0}(x)$, with $\color{couleur1}{\widehat{F}_0}$ and $\color{couleur2}{\widehat{F}_1}$ denoting the empirical distribution functions of $x$ conditional on $\color{couleur1}{t=0}$ and $\color{couleur2}{t=1}$, respectively.
+- assuming a Gaussian distribution of the mediator variable, we can consider $\widehat{\mathcal{T}}(x) := \widehat{\mathcal{T}}_{\mathcal{N}}(x)= \color{couleur2}{\overline{x}_1}\color{black}{}+\color{couleur2}{s_1}\color{couleur1}{s_0^{-1}}\color{black}{} (x-\color{couleur1}{\overline{x}_0}\color{black}{})$,
+$\color{couleur1}{\overline{x}_0}$ and $\color{couleur2}{\overline{x}_1}$ being respectively the averages of $x$ in the two sub-populations, and $\color{couleur1}{s_0}$ and $\color{couleur2}{s_1}$ the sample standard deviations.
+
+:::
+
+
+
+
+::: {.callout-important}
+
+## What is Needed
+
+To estimate the _mutatis mutandis_ Sample Conditional Average Treatment Effect, the following are required:
+
+1. The two estimated models $\color{couleur1}{\widehat{m}_0(x)}$ and $\color{couleur2}{\widehat{m}_1(x)}$.
+2. A function to predict new values with these each of these two models.
+2. A transport method $\mathcal{T}(\cdot)$.
+
+
+:::
+
+
+We will compute the SCATE at the following values of $\boldsymbol{x}$:
+```{r}
+x_0_birth_weight <- seq(2000,4500, by=500)
+x_0_birth_weight
+```
+
+
+
+## Models
+
+
+Let us estimate $\color{couleur1}{\widehat{m}_0(x)}$ using a GAM model, on the subset of the non-smokers:
+```{r}
+reg_0 <- glm(nonnatural_delivery ~ bs(birth_weight),
+             data=base, family=binomial,subset = (cig_rec == "No"))
+```
+And $\color{couleur2}{\widehat{m}_1(x)}$, on the subset of the smokers:
+```{r}
+reg_1 <- glm(nonnatural_delivery ~ bs(birth_weight),
+             data=base, family=binomial,subset = (cig_rec == "Yes"))
+```
+
+
+::: {.callout-note}
+
+## Type of Model
+
+It is possible to estimate different models, the methodology is not restricted to GAM models.
+
+:::
+
+
+## Prediction Function
+
+Let us define a prediction function for these types of models:
+```{r}
+#' @param object regression model (GAM)
+#' @param newdata data frame in which to look for the mediator variable used to predict the target
+model_spline_predict <- function(object, newdata){
+  predict(object, newdata = newdata, type="response")
+}
+```
+
+
+## Transport
+
+Let us now turn to the transport of the mediator variable.
+
+### Quantile-based {#sec-univariate-quantile-based-transport}
+
+
+We define a function to transport the values of a mediator.
+
+```{r}
+#' Quantile-based transport (Univariate)
+#' @param x_0 vector of values to be transported
+#' @param x_m_name name of the mediator variable
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+#' @param data data frame with both T=0 or T=1
+transport_quantile <- function(x_0, x_m_name, treatment_name, treatment_0, treatment_1, data){
+  ind_0 <- pull(data, treatment_name) == treatment_0
+  x_val <- pull(data, x_m_name)
+  # Empirical Cumulative Distribution Function for values of the mediator variable for non-treated
+  Fn <- ecdf(x_val)
+  # Probability associated in the non-treated
+  u <- Fn(x_0)
+  # Transported_values
+  x_1 <- pull(data, x_m_name)[pull(data, treatment_name) == treatment_1]
+  x_t_quantile <- quantile(x_1, u)
+  
+  list(x_0 = x_0, u = u, x_t_quantile = x_t_quantile)
+}
+```
+
+
+The transported values of $\boldsymbol{x}$, i.e., $\mathcal{T}(\boldsymbol{x})$
+```{r}
+x_0_birth_weight_t_q <- 
+  transport_quantile(x_0 = x_0_birth_weight,
+                     x_m_name = "birth_weight", 
+                     treatment_name = "cig_rec",
+                     treatment_0 = "No",
+                     treatment_1 = "Yes",
+                     data = base)
+x_0_birth_weight_t_q
+```
+
+
+### Gaussian Assumption
+
+Now, let us consider the case in which the mediator is assumed to be Gaussian.
+
+The transport function can be defined as follows:
+```{r}
+#' @param x_0 vector of values to be transported
+#' @param x_m_name name of the mediator variable
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param treatment_0 value for non treated
+#' @param treatment_1value for treated
+#' @param data data frame with both T=0 or T=1
+transport_univ_gaussian <- function(x_0, x_m_name, treatment_name, treatment_0, treatment_1, data){
+  x0 <- mean(pull(data, x_m_name)[pull(data, treatment_name) == treatment_0])
+  x1 <- mean(pull(data, x_m_name)[pull(data, treatment_name) == treatment_1])
+  s0 <- sd(pull(data, x_m_name)[pull(data, treatment_name) == treatment_0])
+  s1 <- sd(pull(data, x_m_name)[pull(data, treatment_name) == treatment_1])
+  u_N <- pnorm(x_0,x0,s0)
+  x_t_N <- qnorm(u_N, x1, s1)
+  list(x_0 = x_0, u_N = u_N, x_t_N = x_t_N)
+}
+```
+
+The transported values of $\boldsymbol{x}$, i.e., $\mathcal{T}_\mathcal{N}(\boldsymbol{x})$:
+```{r}
+x_0_birth_weight_t_n <- 
+  transport_univ_gaussian(x_0 = x_0_birth_weight,
+                     x_m_name = "birth_weight", 
+                     treatment_name = "cig_rec",
+                     treatment_0 = "No", 
+                     treatment_1 = "Yes",
+                     data = base)
+x_0_birth_weight_t_n
+```
+
+## Estimation of the Sample Conditional Average Treatment Effect {#sec-univ-sate}
+
+Let us define a function that computes the _Mutatis Mutandis_ Sample Conditional Average Effect:
+```{r}
+#' Computes the Sample Average Treatment Effect with and without transport
+#' @param x_0 vector of values at which to compute $\hat{m}_0(x_0)$, $\hat{m}_1(x_0)$
+#' @param x_t vector of values at which to compute $\hat{m}_1(\mathcal{T}(x_t))$
+#' @param x_m_name vector of names of the mediator variables
+#' @param mod_0 model $\hat{m}_0$
+#' @param mod_1 model $\hat{m}_1$
+#' @param pred_mod_0 prediction function for model $\hat{m}_0(\cdot)$
+#' @param pred_mod_1 prediction function for model $\hat{m}_1(\cdot)$
+#' @param return_x if `TRUE` (default) the mediator variables are returned in the table, as well as their transported values
+sate <- function(x_0, x_t, x_m_names, mod_0, mod_1, pred_mod_0, pred_mod_1, return_x = TRUE){
+  if(is.vector(x_0)){
+    # Univariate case
+    new_data <- tibble(!!x_m_names := x_0)
+  }else{
+    new_data <- x_0
+  }
+  if(is.vector(x_t)){
+    # Univariate case
+    new_data_t <- tibble(!!x_m_names := x_t)
+  }else{
+    new_data_t <- x_t
+  }
+  
+  
+  # $\hat{m}_0(x_0)$
+  y_0 <- pred_mod_0(object = mod_0, newdata = new_data)
+  # $\hat{m}_1(x_0)$
+  y_1 <- pred_mod_1(object = mod_1, newdata = new_data)
+  # $\hat{m}_1(\mathcal{T}(x_0))$
+  y_1_t <- pred_mod_1(object = mod_1, newdata = new_data_t)
+  
+  
+  scate_tab <- 
+    tibble(y_0 = y_0, y_1 = y_1, y_1_t = y_1_t,
+         CATE = y_1-y_0, SCATE = y_1_t-y_0)
+  
+  if(return_x){
+    new_data_t <- new_data_t %>% rename_all(~paste0(.x, "_t"))
+    scate_tab <- bind_cols(new_data, new_data_t, scate_tab)
+  }
+  scate_tab
+}
+```
+
+The quantile-based SCATE ($SCATE(\boldsymbol{x})$), computed using GAM models for $\color{couleur1}{\widehat{m}_0(x)}$ and $\color{couleur2}{\widehat{m}_1(x)}$:
+```{r}
+cate_q_gam_smoke <-
+  sate(x_0 = x_0_birth_weight,
+       x_t = x_0_birth_weight_t_q$x_t_quantile,
+       x_m_names = "birth_weight",
+       mod_0 = reg_0,
+       mod_1 = reg_1,
+       pred_mod_0 = model_spline_predict,
+       pred_mod_1 = model_spline_predict)
+cate_q_gam_smoke
+```
+
+The SCATE ($SCATE(\boldsymbol{x})$) assuming a Gaussian distribution of the mediator variable, computed using GAM models for $\color{couleur1}{\widehat{m}_0(x)}$ and $\color{couleur2}{\widehat{m}_1(x)}$:
+```{r}
+cate_n_gam_smoke <-
+  sate(x_0 = x_0_birth_weight,
+       x_t = x_0_birth_weight_t_n$x_t_N,
+       x_m_names = "birth_weight",
+       mod_0 = reg_0,
+       mod_1 = reg_1,
+       pred_mod_0 = model_spline_predict,
+       pred_mod_1 = model_spline_predict)
+cate_n_gam_smoke
+```
+
+# Multivariate Case {#sec-multivariate}
+
+Now, let us turn to the multivariate case, where we consider two mediator variables: the birth weight and the weight gain of the mother.
+
+
+## Objective
+
+The objective is the same as that in @sec-univariate.
+
+| Variable | Name | Description |
+| :------- | :--- | :---------- |
+| Output ($y$) | `nonnatural_delivery`| Probability of having a non-natural delivery |
+| Treatment ($T$) | `cig_rec` | Whether the `r colorize("mother smokes", couleur2)` $\color{couleur2}{t=1}$ `r colorize("or not", couleur1)` $\color{couleur1}{t=0}$ |
+| Mediators ($\boldsymbol{x}^m$) | `birth_weight`, `wtgain` | Birth weight of the newborn, weight gain on the mother |
+
+
+
+Let us print some summary statistics of the variables considered.
+
+```{r}
+#| tbl-cap: Summary statistics for the observations
+#| label: tbl-summary-stat-multi
+library(gtsummary)
+base %>% 
+  select(nonnatural_delivery, cig_rec, birth_weight, wtgain) %>% 
+  tbl_summary(
+    by = cig_rec,
+    type = all_continuous() ~ "continuous2",
+    statistic = list(
+      all_continuous() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})"),
+      all_categorical() ~ "{n} ({p}%)"),
+    digits = list(
+      all_continuous() ~ 2,
+      all_categorical() ~ 0
+    ),
+    missing_text = "Missing value"
+  ) %>% 
+  add_p() %>% 
+  add_overall(col_label = "Whole sample") %>% 
+  modify_header(label ~ "**Variable**") %>% 
+  modify_spanning_header(c("stat_1", "stat_2") ~ "**Mother is a smoker**") %>% 
+  add_stat_label(
+    label = list(
+      all_continuous() ~ c("Mean (Std)", "Median (IQR)"),
+      all_categorical() ~ "n (%)"
+    )
+  )
+```
+
+::: {.callout-tip}
+
+
+## _Mutatis Mutandis_ $\text{CATE}(\boldsymbol{x})$, in the Multivariate Case
+
+
+The _Mutadis Mutandis_ CATE is given by:
+$$
+\color{couleur2}{m_1}\color{black}{}(\mathcal{T}(\boldsymbol{x}^m),\boldsymbol{x}^c,\not\!\boldsymbol{x}^p)-\color{couleur1}{m_0}\color{black}{}(\boldsymbol{x}^m,\boldsymbol{x}^c,\not\!\boldsymbol{x}^p),
+$$
+
+where $\boldsymbol{x}^c$ are collider (exogeneous) variables that influence $y$ but are not influenced by the treatment and $\not\!\boldsymbol{x}^p$ are confounding (noise, proxy) variables that are influenced by the treatment but do not influence $y$. As the latter are only correlated with $y$ (no causal relationship), they are excluded from $m(\cdot)$.
+
+**Gaussian Assumption**
+
+In the case where $\color{couleur2}{\boldsymbol{X}|t=1\sim\mathcal{N}(\boldsymbol{\mu}_1,\boldsymbol{\Sigma}_1)}$ and $\color{couleur1}{\boldsymbol{X}|t=0\sim\mathcal{N}(\boldsymbol{\mu}_0,\boldsymbol{\Sigma}_0)}$, there is an explicit expression for the optimal transport, which is simply an affine map (see @villani2003optimal for more details). In the univariate case, $\color{couleur2}{x_1}\color{black}{} = \mathcal{T}^\star_{\mathcal{N}}(\color{couleur1}{x_0}\color{black}{}) = \color{couleur2}{\mu_1}\color{black}{}+ \displaystyle{\frac{\color{couleur2}{\sigma_1}}{\color{couleur1}{\sigma_0}}(\color{couleur1}{x_0}\color{black}{}-\color{couleur1}{\mu_0}\color{black}{})}$, while in the multivariate case, an analogous expression can be derived:
+$$
+\color{couleur2}{\boldsymbol{x}_1}\color{black}{} = \mathcal{T}^\star_{\mathcal{N}}(\color{couleur1}{\boldsymbol{x}_0}\color{black}{})=\color{couleur2}{\boldsymbol{\mu}_1}\color{black}{} + \boldsymbol{A}(\color{couleur1}{\boldsymbol{x}_0}\color{black}{}-\color{couleur1}{\boldsymbol{\mu}_0}\color{black}{}),
+$$
+where $\boldsymbol{A}$ is a symmetric positive matrix that satisfies $\boldsymbol{A}\boldsymbol{\Sigma}_0\boldsymbol{A}=\boldsymbol{\Sigma}_1$, which has a unique solution given by $\boldsymbol{A}=\color{couleur1}{\boldsymbol{\Sigma}_0}^{\color{black}{-1/2}}\color{black}{}\big(\color{couleur1}{\boldsymbol{\Sigma}_0}^{\color{black}{1/2}}\color{couleur2}{\boldsymbol{\Sigma}_1}\color{couleur1}{\boldsymbol{\Sigma}_0}^{\color{black}{1/2}}\color{black}{}\big)^{1/2}\color{couleur1}{\boldsymbol{\Sigma}_0}^{\color{black}{-1/2}}$, where $\boldsymbol{M}^{1/2}$ is the square root of the square (symmetric) positive matrix $\boldsymbol{M}$ based on the Schur decomposition ($\boldsymbol{M}^{1/2}$ is a positive symmetric matrix), as described in @higham2008functions.
+
+:::
+
+
+::: {.callout-important}
+
+## What is Needed
+
+As in the univariate case, to estimate the _mutatis mutandis_ Sample Conditional Average Treatment Effect, the following are required:
+
+1. The two estimated models $\color{couleur1}{\widehat{m}_0(x)}$ and $\color{couleur2}{\widehat{m}_1(x)}$.
+2. A function to predict new values with these each of these two models.
+2. A transport method $\mathcal{T}(\cdot)$.
+
+
+:::
+
+
+We will compute the SCATE at the following values of $\boldsymbol{x}$:
+```{r}
+val_birth_weight <- seq(1800, 4600, length = 251)
+val_wtgain <- seq(0, 90, length = 251)
+val_grid <- expand.grid(wtgain = val_wtgain,  birth_weight = val_birth_weight) %>% as_tibble()
+val_grid
+```
+
+## Models
+
+
+Let us estimate $\color{couleur1}{\widehat{m}_0(x)}$ using a GAM model, on the subset of the non-smokers:
+```{r}
+reg_0 <- glm(nonnatural_delivery ~ bs(birth_weight)+bs(wtgain),
+             data=base, family=binomial,subset = (cig_rec == "No"))
+```
+And $\color{couleur2}{\widehat{m}_1(x)}$, on the subset of the smokers:
+```{r}
+reg_1 <- glm(nonnatural_delivery ~ bs(birth_weight)+bs(wtgain),
+             data=base, family=binomial,subset = (cig_rec == "Yes"))
+```
+
+::: {.callout-note}
+
+## Type of Model
+
+As in the univariate case, it is possible to estimate different models, the methodology is not restricted to GAM models.
+
+:::
+
+
+## Prediction Function
+
+The prediction function is the same as that define in the univariate case:
+```{r}
+#' @param object regression model (GAM)
+#' @param newdata data frame in which to look for the mediator variable used to predict the target
+model_spline_predict <- function(object, newdata){
+  predict(object, newdata = newdata, type="response")
+}
+```
+
+
+## Transport
+
+Let us turn to the transport function.
+
+### Gaussian Assumption
+
+We assume the mediator variables to be both Normally distributed. The parameters used to transport the mediator variables under the Gaussian assumption can be estimated thanks to the following function:
+```{r}
+#' Optimal Transport assuming Gaussian distribution for the mediator variables (helper function)
+#' @return A list with the mean and variance of the mediator in each subset, and the symmetric matrix A.
+#' @param target name of the target variable
+#' @param x_m_names vector of names of the mediator variables
+#' @param scale vector of scaling to apply to each `x_m_names` variable to transport (default to 1)
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+transport_gaussian_param <- function(target, x_m_names, scale=1, treatment_name, treatment_0, treatment_1){
+  base_0_unscaled <- 
+    base %>% 
+    select(!!c(x_m_names, treatment_name)) %>% 
+    filter(!!sym(treatment_name) ==  treatment_0)
+  base_1_unscaled <- 
+    base %>% 
+    select(!!c(x_m_names, treatment_name)) %>% 
+    filter(!!sym(treatment_name) ==  treatment_1)
+  
+  for(i in 1:length(scale)){
+    base_0_scaled <- 
+      base_0_unscaled %>% 
+      mutate(!!sym(x_m_names[i]) := !!sym(x_m_names[i]) * scale[i])
+    base_1_scaled <- 
+      base_1_unscaled %>% 
+      mutate(!!sym(x_m_names[i]) := !!sym(x_m_names[i]) * scale[i])
+  }
+  
+  # Mean in each subset (i.e., T=0, T=1)
+  m_0 <- base_0_scaled %>% summarise(across(!!x_m_names, mean)) %>% as_vector()
+  m_1 <- base_1_scaled %>% summarise(across(!!x_m_names, mean)) %>% as_vector()
+  # Variance
+  S_0 <- base_0_scaled %>% select(!!x_m_names) %>% var()
+  S_1 <- base_1_scaled %>% select(!!x_m_names) %>% var()
+  # Matrix A
+  A <- (solve(sqrtm(S_0))) %*% sqrtm( sqrtm(S_0) %*% S_1 %*% (sqrtm(S_0)) ) %*% solve(sqrtm(S_0))
+  
+  list(m_0 = m_0, m_1 = m_1, S_0 = S_0, S_1 = S_1, A = A, scale = scale, x_m_names = x_m_names)
+}
+```
+
+
+We create a function that transports a single observation, given the different parameters:
+```{r}
+#' Gaussian transport for a single observation (helper function)
+#' @param z vector of variables to transport (for a single observation)
+#' @param A symmetric positive matrix that satisfies \(A\sigma_0A=\sigma_1\)
+#' @param m_0,m_1 vectors of mean values in the subsets \(\mathcal{D}_0\) and \(\mathcal{D}_1\)
+#' @param scale vector of scaling to apply to each variable to transport (default to 1)
+T_C_single <- function(z, A, m_0, m_1, scale = 1){
+  z <- z*scale
+  as.vector(m_1 + A %*% (z-m_0))*(1/scale)
+}
+```
+
+
+Lastly, we define a function that transports the mediator variables, under the Gaussian assumption. If the `params` argument is `NULL`{.R}, the arguments needed to estimate them through the `transport_gaussian_param()` function are required (`target`, `x_m_names`, `treatment_name`, `treatment_0`, `treatment_1`).
+```{r}
+#' Gaussian transport
+#' @param z data frame of variables to transport
+#' @param params (optional) parameters to use for the transport (result of `transport_gaussian_param()`, default to NULL)
+#' @param target name of the target variable
+#' @param x_m_names vector of names of the mediator variables
+#' @param scale vector of scaling to apply to each `x_m_names` variable to transport (default to 1)
+#' @param treatment_name name of the treatment variable (column in `data`)
+#' @param treatment_0 value for non treated
+#' @param treatment_1 value for treated
+gaussian_transport <- function(z, params = NULL, ..., x_m_names, scale, treatment_name, treatment_0, treatment_1){
+  if(is.null(params)){
+    # If the parameters of the transport function are not provided
+    # they need to be computed first
+    params <- 
+      transport_gaussian_param(target = target, x_m_names = x_m_names, 
+                               scale = scale, treatment_name = treatment_name, 
+                               treatment_0 = treatment_0, treatment_1 = treatment_1)
+  }
+  A <- params$A
+  m_0 <- params$m_0 ; m_1 <- params$m_1
+  scale <- params$scale
+  x_m_names <- params$x_m_names
+  
+  values_to_transport <- z %>% select(!!x_m_names)
+  transported_val <- 
+    apply(values_to_transport, 1, T_C_single, A = A, m_0 = m_0, m_1 = m_1,
+          scale = scale, simplify = FALSE) %>% 
+    do.call("rbind", .)
+  colnames(transported_val) <- colnames(z)
+  transported_val <- as_tibble(transported_val)
+  
+  structure(.Data = transported_val, params = params)
+}
+```
+
+The transported values:
+```{r}
+val_grid_t_n <- 
+  gaussian_transport(z = val_grid, target = "nonnatural_delivery",
+                     x_m_names = c("birth_weight", "wtgain"), 
+                     scale = c(1, 1/100), treatment_name = "cig_rec",
+                     treatment_0 = "No", treatment_1 = "Yes")
+head(val_grid_t_n)
+```
+
+The estimated parameters can be extracted as follows:
+```{r}
+attr(val_grid_t_n, "params")
+```
+
+
+These can be used to transport other values, without estimating the parameters again:
+```{r}
+
+gaussian_transport(z = tibble(birth_weight = 2500, wtgain = 2),
+                   params = attr(val_grid_t_n, "params"))
+```
+
+
+## Estimation of the Sample Conditional Average Treatment Effect
+
+Let us use the `sate()`{.R} function that computes the _Mutatis Mutandis_ Sample Condition Average Effect, defined in @sec-univ-sate.
+
+
+The _Mutatis Mutandis_ SCATE ($SCATE(\boldsymbol{x})$), computed using GAM models for $\color{couleur1}{\widehat{m}_0(x)}$ and $\color{couleur2}{\widehat{m}_1(x)}$, under the Gaussian assumption can then be obtained as follows:
+```{r}
+mm_sate <- 
+  sate(
+    x_0 = val_grid,
+    x_t = val_grid_t_n,
+    x_m_names = c("wtgain", "birth_weight"),
+    mod_0 = reg_0,
+    mod_1 = reg_1,
+    pred_mod_0 = model_spline_predict, pred_mod_1 = model_spline_predict,
+    return = TRUE)
+mm_sate
+```
+

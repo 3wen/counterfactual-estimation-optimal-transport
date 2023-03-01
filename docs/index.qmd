@@ -1,0 +1,135 @@
+---
+title: "Optimal Transport for Counterfactual Estimation: A Method for Causal Inference"
+subtitle: "Online Appendix"
+pdf-engine: lualatex
+fontsize: 9pt
+link-citations: true
+from: markdown+emoji
+author: 
+  - Arthur Charpentier
+  - Emmanuel Flachaire
+  - Ewen Gallic
+lang: en
+crossref:
+  title-delim: ". "
+toc: true
+format:
+  html:
+    code-fold: false
+    code-summary: "Show the R codes"
+    number-sections: true
+    html-math-method: mathjax
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+    include-in-header:
+      - assets/colors.tex
+fig-cap-location: top
+tbl-cap-location: top
+execute:
+  echo: true
+  cache: true
+bibliography: ../References/biblio.bib
+self-contained: true
+warning: false
+title-block-banner: true
+---
+
+```{r optn, echo=FALSE, include=TRUE, message=FALSE, warning=FALSE, cache=FALSE}
+library(tidyverse)
+library(wesanderson)
+library(car)
+library(transport)
+library(splines)
+library(mgcv)
+library(expm)
+library(tidyverse)
+
+colorize <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    
+    if(!str_detect(substitute(color), "^#")){
+      color <- deparse(substitute(color))
+    }
+    
+    sprintf("\\textcolor{%s}{%s}", color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'>%s</span>", color,
+      x)
+  } else x
+}
+
+library(wesanderson)
+colr1 <- wes_palette("Darjeeling1")
+colr2 <- wes_palette("Darjeeling2")
+couleur1 <- colr1[2] #00a389
+couleur2 <- colr1[4] #ff7c00
+couleur3 <- colr2[2] #006e9e
+coul1 <- colr1[1]
+coul2 <- colr1[3]
+
+CLR <- c(hcl.colors(16,palette="Blues"),rev(hcl.colors(16,palette="Reds")))
+col_neg <- CLR[10]
+col_pos <- CLR[24]
+```
+
+::: {.hidden}
+
+$$
+\usepackage{dsfont}
+\usepackage{xcolor}
+\require{mathtools}
+\definecolor{bayesred}{RGB}{147, 30, 24}
+\definecolor{bayesblue}{RGB}{32, 35, 91}
+\definecolor{bayesorange}{RGB}{218, 120, 1}
+\definecolor{grey}{RGB}{128, 128, 128}
+\definecolor{couleur1}{RGB}{0,163,137}
+\definecolor{couleur2}{RGB}{255,124,0}
+\definecolor{couleur3}{RGB}{0, 110, 158}
+\definecolor{coul1}{RGB}{255,37,0}
+\definecolor{coul2}{RGB}{242,173,0}
+\definecolor{col_neg}{RGB}{155, 191, 221}
+\definecolor{col_pos}{RGB}{255, 128, 106}
+{\color{bayesorange} P (\text{H} \mid \text{E})} = \frac
+{{\color{bayesred} P(\text{H})} \times 
+{\color{bayesblue}P(\text{E} \mid \text{H})}}
+{\color{grey} {P(\text{E})}}
+$$
+
+:::
+
+
+
+This online appendix provides R codes to apply the methods presented in @charpentier2023transport.
+
+
+- `r fontawesome::fa("laptop-code")` [Data pre-processing](births_stats.html)
+- `r fontawesome::fa("laptop-code")` [Short example](short_examples.html)
+- Univariate case:
+
+    - `r fontawesome::fa("laptop-code")` [Replication of the results of the paper in the **univariate** case](reproduction_univariate.html)
+    - `r fontawesome::fa("laptop-code")` [Bootstrap simulations](univariate_simul.html)
+- Multivariate case:
+
+    - `r fontawesome::fa("laptop-code")` [Replication of the results of the paper in the **multivariate** case](reproduction_multivariate.html)
+    - `r fontawesome::fa("laptop-code")` [Bootstrap simulations](multivariate_simul.html)
+
+
+The working paper is available on [https://arxiv.org/abs/2301.07755](arXiv).
+
+[Charpentier, A.](https://freakonometrics.hypotheses.org/), [Flachaire, E.](https://sites.google.com/site/emmanuelflachaire/) & [Gallic, E](https://egallic.fr). (2023). **Optimal Transport for Counterfactual Estimation: A Method for Causal Inference **. [arXiv:2301.07755](https://arxiv.org/abs/2301.07755).  
+    <a href="https://doi.org/10.48550/arXiv.2301.07755" class="btn btn-light btn-sm" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">doi</a> <a href="https://arxiv.org/abs/2301.07755" class="btn btn-light btn-sm" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">`r fontawesome::fa("file-pdf")` arXiv</a>
+    <details><summary>`r fontawesome::fa("book")` bib entry</summary>
+<pre class="bibref">
+@misc{https://doi.org/10.48550/arxiv.2301.07755,
+  doi = {10.48550/ARXIV.2301.07755},
+  url = {https://arxiv.org/abs/2301.07755},
+  author = {Charpentier, Arthur and Flachaire, Emmanuel and Gallic, Ewen},
+  keywords = {Econometrics (econ.EM), FOS: Economics and business, FOS: Economics and business},
+  title = {Optimal Transport for Counterfactual Estimation: A Method for Causal Inference},
+  publisher = {arXiv},
+  year = {2023},
+  copyright = {Creative Commons Attribution 4.0 International}
+}
+</pre></details>
