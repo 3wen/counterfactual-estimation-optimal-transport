@@ -1,0 +1,1396 @@
+---
+title: "Optimal Transport for Counterfactual Estimation: A Method for Causal Inference"
+subtitle: "Linked Birth/Infant Death Cohort Data: Descriptive Statistics (2013 cohort)"
+pdf-engine: lualatex
+fontsize: 9pt
+link-citations: true
+from: markdown+emoji
+author: 
+  - Arthur Charpentier
+  - Emmanuel Flachaire
+  - Ewen Gallic
+lang: en
+crossref:
+  title-delim: ". "
+toc: true
+format:
+  html:
+    embed-resources: true
+    code-fold: false
+    code-summary: "Show the R codes"
+    number-sections: true
+    html-math-method: mathjax
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+    include-in-header:
+      - assets/colors.tex
+fig-cap-location: top
+tbl-cap-location: top
+execute:
+  echo: true
+  cache: true
+bibliography: ../References/biblio.bib
+self-contained: true
+warning: false
+title-block-banner: true
+---
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+# library(reticulate)
+# library(thematic)
+
+# thematic_on(
+#   bg = "#122543",
+#   fg = "#FDF6E3",
+#   accent = "#CC79A7"
+# )
+# 
+# knitr::opts_chunk$set(tidy.opts=list(width.cutoff=80), tidy=FALSE, warning = FALSE, message = FALSE)
+# knitr::knit_hooks$set(document = function(x) {sub('\\usepackage[]{color}', '\\usepackage{xcolor}', x, fixed = TRUE)})
+# knitr::opts_chunk$set(engine.path = list(
+#   # python = '/anaconda3/bin/python'
+#   # python = '/Users/ewengallic/opt/anaconda3/envs/r-reticulate/bin/python' # For iMac (not anymore)
+#   python = '/Users/ewengallic/.virtualenvs/r-reticulate/bin/python'
+#   #python = '/usr/local/bin/python3' # for MacBook Pro
+# ))
+# knitr::knit_engines$set(python = reticulate::eng_python)
+
+
+options(bookdown.post.latex = function(x) {
+  # x is the content of the LaTeX output file
+  gsub('^\\\\(begin|end)\\{verbatim\\}$', '\\\\\\1{lstlisting}', x)
+})
+
+colorize <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    
+    if(!str_detect(substitute(color), "^#")){
+      color <- deparse(substitute(color))
+    }
+    
+    sprintf("\\textcolor{%s}{%s}", color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'>%s</span>", color,
+            x)
+  } else x
+}
+
+wongBlack <- "#000000"
+wongGold <- "#E69F00"
+wongLightBlue <- "#56B4E9"
+wongGreen <- "#009E73"
+wongYellow <- "#F0E442"
+wongBlue <- "#0072B2"
+wongOrange <- "#D55E00"
+wongPurple <- "#CC79A7"
+IBMBlue <- "#648FFF"
+IBMPurple <- "#785EF0"
+IBMMagenta <- "#DC267F"
+IBMOrange <- "#FE6100"
+IBMYellow <- "#FFB000"
+gris <- "#949698"
+
+
+```
+
+
+# Load Data
+
+The CSV files for the 2013 cohort were downloaded from the NBER collection of [Birth Cohort Linked Birth and Infant Death Data](http://www.cdc.gov/nchs/linked.htm) of the [National Vital Statistics System](http://www.cdc.gov/nchs/nvss.htm) of the [National Center for Health Statistics](http://www.cdc.gov/nchs/nvss.htm), on the [NBER](https://www.nber.org/research/data/linked-birthinfant-death-cohort-data) website.
+
+```{r, eval=FALSE}
+linked_deaths <- read_csv("../data/linkco2013us_num.csv.zip")
+linked_deaths
+linked_births <- read_csv("../data/linkco2013us_den.csv.zip")
+linked_births
+```
+
+Each row corresponds to a newborn. When the newborn died, an identified with a unique ID (column `idnumber`) is provided in both tables. A lot of columns from both files contain the same information. We will only keep some of those columns.
+
+## Deaths
+
+First, let us focus on the subsample of deaths, only on the following variables.
+
+```{r, eval=FALSE}
+deaths <- 
+  linked_deaths %>% 
+  select(idnumber, d_restatus, hospd, weekdayd, dthyr, dthmon,
+         dob_yy, dob_mm, dob_wk, aged)
+```
+
+
+
+
+:::{.callout-warning}
+
+## Warning
+
+Some variables, specific to the deaths file contain only `NA`{.R}:
+
+- stoccfipd: "State of Occurrence (FIPS) - Death",
+- cntocfipd: "County of Occurrence (FIPS) of Death",
+- stresfipd: "State of Residence (FIPS) - Death",
+- drcnty: "State of Residence Death Recode",
+- cntyrfpd: "County of Residence (FIPS) - Death",
+- cntrsppd: "Population Size of County of Residence of Death",
+
+We therefore do not keep these.
+
+:::
+
+Let us encode the values for categorical variables:
+
+```{r, eval=FALSE}
+#| code-fold: true
+deaths <- 
+  deaths %>% 
+  mutate(
+    d_restatus = factor(
+      d_restatus, 
+      levels = c(1:4), 
+      labels = c("Residents", "Intrastate Nonresidents", 
+                 "Interstate or Interterritory Nonresidents", "Foreign Residents")
+    ),
+    hospd = factor(
+      hospd,
+      levels = c(1:7, 9),
+      labels = c("Hospital, clinic or Medical Center - Inpatient",
+                 "Hospital, clinic or Medical Center - ER",
+                 "Hospital, clinic or Medical Center - Dead on Arrival",
+                 "Decedent's home",
+                 "Hospice facility",
+                 "Nursing home/long term care",
+                 "Other",
+                 "Unknown"
+      ),
+    ),
+    weekdayd = factor(
+      weekdayd, 
+      levels = c(1:7, 9),
+      labels = c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
+                 "Friday", "Saturday", "Unknown")
+    ),
+    dthmon = factor(dthmon, levels = 1:12),
+    dob_mm = factor(dob_mm, levels = 1:12),
+    dob_wk = factor(
+      dob_wk,
+      levels = c(1:7, 9),
+      labels = c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
+                 "Friday", "Saturday", "Unknown")
+    )
+  )
+```
+
+
+The description of those columns can be added to our tibble, using the `set_variable_labels()`{.R} function from {labelled}.
+```{r}
+library(labelled)
+```
+
+```{r, eval=FALSE}
+#| code-fold: true
+deaths <- 
+  deaths %>% 
+  labelled::set_variable_labels(
+    d_restatus = "Death Resident Status",
+    hospd = "Place of Death and Decedent's Status",
+    weekdayd = "Day of Week of Death",
+    dthyr = "Year of Death",
+    dthmon = "Month of Death",
+    dob_yy = "Birth Year",
+    dob_mm = "Birth Month",
+    dob_wk = "Birth Weekday",
+    aged = "Age at Death in Days"
+  )
+```
+
+
+Let us save this tibble which contains only the information that we are interested in.
+```{r, eval=FALSE}
+save(deaths, file = "../data/deaths.RData")
+```
+
+```{r, echo=FALSE}
+load("../data/deaths.RData")
+```
+
+Here is an overview of the first rows:
+```{r}
+deaths
+```
+
+
+## Births
+
+
+Now let us turn to the births dataset. As for the deaths dataset, let us recode the values and add some labels.
+
+```{r, eval=FALSE}
+births <- 
+  linked_births %>% 
+  select(
+    # Mother's characteristics
+    mager41, mbrace, mracerec, mar, meduc,
+    # Father's characteristics
+    fagecomb, fbrace, fracerec,
+    # Child's characteristics
+    idnumber, bfacil, bfacil3, restatus, sex, dbwt,
+    # Pregnancy
+    lbo, tbo, precare_rec, uprevis, wtgain, cig_1, cig_2, cig_3, cig_rec,
+    dlmp_mm, dlmp_yy, estgest, combgest,
+    # Risk Factor
+    rf_diab, rf_gest, rf_phyp, rf_ghyp, rf_eclam, rf_ppterm,
+    rf_ppoutc, rf_cesar,
+    # Obstetric Procedures
+    op_cerv, op_tocol, op_ecvs, op_ecvf, uop_induc, uop_tocol,
+    # Onset of Labor
+    on_ruptr, on_abrup, on_prolg,
+    # Charact. of Labor and Delivery
+    ld_induct, ld_augment, ld_nvrtx, ld_steroids, ld_antibio, 
+    ld_chorio, ld_mecon, ld_fintol, ld_anesth,
+    # Complications of Labor and Delivery
+    uld_meco, uld_precip, uld_breech,
+    # Method of Delivery, Delivery
+    md_present, md_route, md_trial, rdmeth_rec, dmeth_rec, 
+    attend, apgar5, dplural,
+    # Abnormal Conditions of the Newborn
+    ab_vent, ab_vent6, ab_nicu, ab_surfac, ab_antibio, ab_seiz, ab_inj,
+    # Congenital Anomalies of the Newborn
+    ca_anen, ca_menin, ca_heart, ca_hernia, ca_ompha, ca_gastro, 
+    ca_limb, ca_cleftlp, ca_cleft, ca_downs, ca_chrom, ca_hypos,
+    # Death
+    manner
+  )
+```
+
+
+Recoding the observations, following the guide:
+```{r, eval=FALSE}
+#| code-fold: true
+births <- 
+  births %>% 
+  mutate(
+    mager41 = factor(
+      mager41,
+      levels = c(12:50),
+      labels = c("10-12", 13:49, "50-64"),
+    ),
+    bfacil = factor(
+      bfacil,
+      levels = c(1:7, 9),
+      labels = c(
+        "Hospital",
+        "Freestanding Birth Center",
+        "Home (intended)",
+        "Home (not intended)",
+        "Home (unknown if intended)",
+        "Clinic / Doctor’s Office",
+        "Other",
+        "Unknown"
+      )
+    ),
+    bfacil3 = factor(
+      bfacil3,
+      levels = c(1,2,3),
+      labels = c("Hospital", "Not in Hospital", "Unknown or Not Stated")
+    ),
+    restatus = factor(
+      restatus,
+      levels = c(1:4), 
+      labels = c("Residents", "Intrastate Nonresidents", 
+                 "Interstate or Interterritory Nonresidents", "Foreign Residents")
+    ),
+    mbrace = factor(
+      mbrace,
+      levels = c(1:14, 21:24),
+      labels = c(
+        "White – single race",
+        "Black – single race",
+        "American Indian – single race",
+        "Asian Indian – single race",
+        "Chinese – single race",
+        "Filipino – single race",
+        "Japanese – single race",
+        "Korean – single race",
+        "Vietnamese – single race",
+        "Other Asian – single race",
+        "Hawaiian – single race",
+        "Guamanian – single race",
+        "Samoan – single race",
+        "Other Pacific Islander – single race",
+        "White – bridged multiple race",
+        "Black – bridged multiple race",
+        "American Indian & Alaskan Native – bridged multiple race",
+        "Asian / Pacific Islander – bridged multiple race"
+      )
+    ),
+    mracerec = factor(
+      mracerec,
+      levels = c(0, 1:4),
+      labels = c(
+        "Other (not classified as White or Black)",
+        "White",
+        "Black",
+        "American Indian / Alaskan Native ",
+        "Asian / Pacific Islander"
+      )
+      ),
+    mar = factor(
+      mar,
+      levels = c(1,2, 3, 9),
+      labels = c("Yes", "No", "Unmarried parents not living together",
+                 "Unknown or not Stated")
+    ),
+    meduc = factor(
+      meduc,
+      levels = c(1:9),
+      labels = c(
+        "8th grade or less",
+        "9th through 12th grade with no diploma",
+        "High school graduate or GED completed",
+        "Some college credit, but not a degree",
+        "Associate degree (AA,AS)",
+        "Bachelor’s degree (BA, AB, BS)",
+        "Master’s degree (MA, MS, MEng, MEd, MSW, MBA)",
+        "Doctorate (PhD, EdD) or Professional Degree (MD, DDS, DVM, LLB, JD)",
+        "Unknown"
+      )
+    ),
+    fagecomb = ifelse(fagecomb == 99, NA, fagecomb),
+    fbrace = factor(
+      fbrace,
+      levels = c(1:14, 21:24, 99),
+      labels = c(
+        "White – single race",
+        "Black – single race",
+        "American Indian – single race",
+        "Asian Indian – single race",
+        "Chinese – single race",
+        "Filipino – single race",
+        "Japanese – single race",
+        "Korean – single race",
+        "Vietnamese – single race",
+        "Other Asian – single race",
+        "Hawaiian – single race",
+        "Guamanian – single race",
+        "Samoan – single race",
+        "Other Pacific Islander – single race",
+        "White – bridged multiple race",
+        "Black – bridged multiple race",
+        "American Indian & Alaskan Native – bridged multiple race",
+        "Asian / Pacific Islander – bridged multiple race",
+        "Unknown or not stated, also includes states not reporting multiple race"
+      )
+    ),
+    fracerec = factor(
+      fracerec,
+      levels = c(0:4, 9),
+      labels = c(
+       "Other (not classified as White or Black)",
+       "White",
+       "Black",
+       "American Indian / Alaskan Native",
+       "Asian / Pacific Islander",
+       "Unknown or not stated"
+      ),
+    ),
+    lbo = ifelse(lbo == 9, NA, lbo), # careful: 8: 8+
+    tbo = ifelse(tbo == 9, NA, tbo), # careful: 8: 8+
+    precare_rec = factor(
+      precare_rec,
+      levels = c(1:5),
+      labels = c(
+        "1st to 3rd month",
+        "4th to 6th month",
+        "7th to final month",
+        "No prenatal care",
+        "Unknown or not stated"
+      )
+    ),
+    uprevis = ifelse(uprevis == 99, NA, uprevis),
+    wtgain = ifelse(wtgain == 99, NA, wtgain), # careful: 98: 98+
+    cig_1 = ifelse(cig_1 == 99, NA, cig_1), # careful: 98: 98+
+    cig_2 = ifelse(cig_2 == 99, NA, cig_1), # careful: 98: 98+
+    cig_3 = ifelse(cig_3 == 99, NA, cig_1), # careful: 98: 98+
+    cig_rec = factor(
+      cig_rec,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    rf_diab = factor(
+      rf_diab,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    rf_gest = factor(
+      rf_gest,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    rf_phyp = factor(
+      rf_phyp,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    rf_ghyp = factor(
+      rf_ghyp,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    rf_eclam = factor(
+      rf_eclam,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    rf_ppterm = factor(
+      rf_ppterm,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    rf_ppoutc = factor(
+      rf_ppoutc,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    rf_cesar = factor(
+      rf_cesar,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    op_cerv = factor(
+      op_cerv,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    op_tocol = factor(
+      op_tocol,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    op_ecvs = factor(
+      op_ecvs,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    op_ecvf = factor(
+      op_ecvf,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    uop_induc = factor(
+      uop_induc,
+      levels = c(1,2,8,9),
+      labels = c("Yes", "No", "Not on certificate", "Unknown or not stated")
+    ),
+    uop_tocol = factor(
+      uop_tocol,
+      levels = c(1,2,8,9),
+      labels = c("Yes", "No", "Not on certificate", "Unknown or not stated")
+    ),
+    on_ruptr = factor(
+      on_ruptr,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    on_abrup = factor(
+      on_abrup,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    on_prolg = factor(
+      on_prolg,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    ld_induct = factor(
+      ld_induct,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    ld_augment = factor(
+      ld_augment,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    ld_nvrtx = factor(
+      ld_nvrtx,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    ld_steroids = factor(
+      ld_steroids,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    ld_antibio = factor(
+      ld_antibio,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    ld_chorio = factor(
+      ld_chorio,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    ld_mecon = factor(
+      ld_mecon,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    ld_fintol = factor(
+      ld_fintol,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    ld_anesth = factor(
+      ld_anesth,
+      levels = c("Y", "N", "U"),
+      labels = c("Yes", "No", "Unknown or not stated")
+    ),
+    uld_meco = factor(
+      uld_meco,
+      levels = c(1,2,8,9),
+      labels = c("Yes", "No", "Not on certificate", "Unknown or not stated")
+    ),
+    uld_precip = factor(
+      uld_precip,
+      levels = c(1,2,8,9),
+      labels = c("Yes", "No", "Not on certificate", "Unknown or not stated")
+    ),
+    uld_breech = factor(
+      uld_breech,
+      levels = c(1,2,8,9),
+      labels = c("Yes", "No", "Not on certificate", "Unknown or not stated")
+    ),
+    md_present = factor(
+      md_present,
+      levels = c(1,2,3,9),
+      labels = c(
+        "Cephalic",
+        "Breech",
+        "Other",
+        "Unknown or not stated"
+      )
+    ),
+    md_route = factor(
+      md_route,
+      levels = c(1,2,3,4,9),
+      labels = c(
+        "Spontaneous",
+        "Forceps",
+        "Vacuum",
+        "Cesarean",
+        "Unknown or not stated"
+      )
+    ),
+    md_trial = factor(
+      md_trial,
+      levels = c("Y", "N", "X", "U"),
+      labels = c(
+        "Yes", "No",
+        "Not applicable ", "Unknown or not stated"
+      )
+    ),
+    rdmeth_rec = factor(
+      rdmeth_rec,
+      levels = c(1:6, 9),
+      labels = c(
+        "Vaginal",
+        "Vaginal after previous c-section",
+        "Primary C-section",
+        "Repeat C-section",
+        "Vaginal (unknown if previous c-section)",
+        "C-section (unknown if previous c-section)",
+        "Not stated"
+      )
+    ),
+    dmeth_rec = factor(
+      dmeth_rec,
+      levels = c(1,2,9),
+      labels = c("Vaginal", "C-Section", "Unknown")
+    ),
+    attend = factor(
+      attend,
+      levels = c(1:5, 9),
+      labels = c(
+        "Doctor of Medicine",
+        "Doctor of Osteopathy",
+        "Certified Nurse Midwife",
+        "Other Midwife",
+        "Other",
+        "Unknown or not stated"
+      )
+    ),
+    apgar5 = ifelse(apgar5 == 99, yes = NA, no = apgar5),
+    dplural = factor(
+      dplural,
+      levels = c(1:5),
+      labels = c(
+        "Single",
+        "Twin",
+        "Triplet",
+        "Quadruplet",
+        "Quintuplet or higher"
+      )
+    ),
+    sex = factor(
+      sex,
+      levels = c("M", "F"),
+      labels = c("Male", "Female")
+    ),
+    dlmp_mm = ifelse(dlmp_mm == 99, NA, dlmp_mm),
+    dlmp_yy = ifelse(dlmp_yy == 9999, NA, dlmp_yy),
+    estgest = ifelse(estgest == 99, yes = NA, estgest),
+    combgest = ifelse(combgest == 99, NA, combgest),
+    dbwt = ifelse(dbwt == 9999, NA, dbwt),
+    ab_vent = factor(
+      ab_vent,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, Complication reported",
+        "No Complication reported",
+        "Unknown or not stated"
+      )
+    ),
+    ab_vent6 = factor(
+      ab_vent6,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, Complication reported",
+        "No Complication reported",
+        "Unknown or not stated"
+      )
+    ),
+    ab_nicu = factor(
+      ab_nicu,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, Complication reported",
+        "No Complication reported",
+        "Unknown or not stated"
+      )
+    ),
+    ab_surfac = factor(
+      ab_surfac,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, Complication reported",
+        "No Complication reported",
+        "Unknown or not stated"
+      )
+    ),
+    ab_antibio = factor(
+      ab_antibio,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, Complication reported",
+        "No Complication reported",
+        "Unknown or not stated"
+      )
+    ),
+    ab_seiz = factor(
+      ab_seiz,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, Complication reported",
+        "No Complication reported",
+        "Unknown or not stated"
+      )
+    ),
+    ab_inj = factor(
+      ab_inj,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, Complication reported",
+        "No Complication reported",
+        "Unknown or not stated"
+      )
+    ),
+    ca_anen = factor(
+      ca_anen,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    ca_menin = factor(
+      ca_menin,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    ca_heart = factor(
+      ca_heart,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    ca_hernia = factor(
+      ca_hernia,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    ca_ompha = factor(
+      ca_ompha,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    ca_gastro = factor(
+      ca_gastro,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    ca_limb = factor(
+      ca_limb,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    ca_cleftlp = factor(
+      ca_cleftlp,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    ca_cleft = factor(
+      ca_cleft,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    ca_downs = factor(
+      ca_downs,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    ca_chrom = factor(
+      ca_chrom,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    ca_hypos = factor(
+      ca_hypos,
+      levels = c("Y", "N", "U"),
+      labels = c(
+        "Yes, anomaly reported",
+        "No, anomaly not reported",
+        "Unknown"
+      )
+    ),
+    manner = factor(
+      manner,
+      levels = c(1:7),
+      labels = c(
+        "Accident",
+        "Suicide",
+        "Homicide",
+        "Pending investigation",
+        "Could not determine",
+        "Self-inflicted",
+        "Natural"
+      )
+    )
+  )
+
+```
+
+
+Then, let us add some labels to each column.
+```{r, eval=FALSE}
+#| code-fold: true
+births <- 
+  births %>% 
+  labelled::set_variable_labels(
+    # Child's characteristics
+    bfacil = "Birth Place",
+    bfacil3 = "Birth Place",
+    restatus ="Resident Status",
+    sex = "Sex of Infant",
+    dbwt = "Birth Weight (in Grams)",
+    # Death of the newborn
+    manner = "Manner of Death",
+    # Mother's characteristics
+    mager41 = "Mother's Age",
+    mbrace = "Mother's Bridged Race",
+    mracerec = "Mother's Race",
+    mar ="Mother's Marital Status",
+    meduc = "Mother's Education",
+    # Father's characteristics
+    fagecomb = "Father's Combined Age",
+    fbrace = "Father's Bridged Race",
+    fracerec = "Father's Race",
+    # Pregnancy
+    lbo = "Live Birth Order",
+    tbo = "Total Birth Order",
+    precare_rec = "Month Prenatal Care Began",
+    uprevis = "Number of Prenatal Visits",
+    wtgain = "Weight Gain",
+    cig_1 = "Cigarettes 1st Trimester",
+    cig_2 = "Cigarettes 2nd Trimester",
+    cig_3 = "Cigarettes 3rd Trimester",
+    cig_rec = "Smokes cigarettes",
+    dlmp_mm = "Last Normal Menses: Month",
+    dlmp_yy = "Last Normal Menses: Year",
+    estgest = "Obstetric/Clinical Gestation Est.",
+    combgest = "Gestation – Detail in Weeks",
+    # Risk factor
+    rf_diab = "Risk Factor: Prepregnancy Diabetes",
+    rf_gest = "Risk Factor: Gestational Diabetes",
+    rf_phyp = "Risk Factor: Prepregnancy Hypertension",
+    rf_ghyp = "Risk Factor: Gestational Hypertension",
+    rf_eclam = "Risk Factor: Hypertension Eclampsia",
+    rf_ppterm = "Risk Factor: Previous Preterm Birth",
+    rf_ppoutc = "Risk Factor: Poor Pregnancy Outcome",
+    rf_cesar = "Risk Factor: Previous Cesarean Deliveries",
+    # Obstetric procedures
+    op_cerv =  "Obstetric Procedures: Cervical Cerclage",
+    op_tocol = "Obstetric Procedures: Tocolysis",
+    op_ecvs = "Obstetric Procedures: Successful External Cephalic",
+    op_ecvf = "Obstetric Procedures: Failed External Cephalic",
+    uop_induc = "Obstetric Procedures: Induction of labor",
+    uop_tocol = "Obstetric Procedures: Tocolysis",
+    on_ruptr = "Onset of Labor: Premature Rupture of Membrane",
+    on_abrup = "Onset of Labor: Abruptio placenta",
+    on_prolg = "Onset of Labor: Prolonged Labor",
+    # Labor
+    ld_induct = "Charact. of Labor and Delivery: Induction of Labor",
+    ld_augment = "Charact. of Labor and Delivery: Augmentation of Labor",
+    ld_nvrtx = "Charact. of Labor and Delivery: Non-Vertex Presentation",
+    ld_steroids = "Charact. of Labor and Delivery: Steroids",
+    ld_antibio = "Charact. of Labor and Delivery: Antibiotics",
+    ld_chorio = "Charact. of Labor and Delivery: Chorioamnionitis",
+    ld_mecon = "Charact. of Labor and Delivery: Meconium Staining",
+    ld_fintol = "Charact. of Labor and Delivery: Fetal Intolerance",
+    ld_anesth = "Charact. of Labor and Delivery: Anesthesia",
+    uld_meco = "Complications of Labor and Delivery: Meconium",
+    uld_precip = "Complications of Labor and Delivery: Precipitous labor",
+    uld_breech = "Complications of Labor and Delivery: Breech",
+    md_present = "Method of Delivery: Fetal Presentation",
+    md_route = "Method of Delivery: Final Route and Method of Delivery",
+    md_trial = "Method of Delivery: Trial of Labor Attempted",
+    rdmeth_rec = "Delivery Method",
+    dmeth_rec = "Delivery Method",
+    attend = "Attendant",
+    apgar5 = "Five Minute Apgar Score",
+    dplural = "Plurality",
+    # Abnormal Conditions and anomalies of the newborn
+    ab_vent = "Abnormal Conditions of the Newborn: Assisted Ventilation",
+    ab_vent6 = "Abnormal Conditions of the Newborn: Assisted Ventilation >6hrs",
+    ab_nicu = "Abnormal Conditions of the Newborn: Admission to NICU",
+    ab_surfac = "Abnormal Conditions of the Newborn: Surfactant",
+    ab_antibio = "Abnormal Conditions of the Newborn: Antibiotics",
+    ab_seiz = "Abnormal Conditions of the Newborn: Seizures",
+    ab_inj = "Abnormal Conditions of the Newborn: Birth Injury",
+    #
+    ca_anen = "Congenital Anomalies of the Newborn: Anencephaly",
+    ca_menin = "Congenital Anomalies of the Newborn: Meningomyelocele/Spina Bifida",
+    ca_heart = "Congenital Anomalies of the Newborn: Cyanotic Congenital Heart Disease",
+    ca_hernia = "Congenital Anomalies of the Newborn: Congenital Diaphragmatic Hernia",
+    ca_ompha = "Congenital Anomalies of the Newborn: Omphalocele",
+    ca_gastro = "Congenital Anomalies of the Newborn: Gastroschisis",
+    ca_limb = "Congenital Anomalies of the Newborn: Limb Reduction Deficit",
+    ca_cleftlp = "Congenital Anomalies of the Newborn: Cleft Lip w/ or w/o Cleft Palate",
+    ca_cleft = "Congenital Anomalies of the Newborn: Cleft Palate Alone",
+    ca_downs = "Congenital Anomalies of the Newborn: Downs Syndrome",
+    ca_chrom = "Congenital Anomalies of the Newborn: Suspected Chromosonal Disorder",
+    ca_hypos = "Congenital Anomalies of the Newborn: Hypospadias"
+  )
+```
+
+And let us save the data:
+```{r, eval=FALSE}
+save(births, file = "../data/births.RData")
+```
+
+:::{.callout-warning}
+
+## Warning
+
+The father's education is missing from the data.
+
+:::
+
+```{r, echo=FALSE}
+load("../data/births.RData")
+```
+
+
+Here is an extract from the first rows of the births data:
+```{r}
+births
+```
+
+
+
+# Descriptive statistics
+
+```{r}
+df <- 
+  births %>% 
+  left_join(deaths)
+```
+
+
+
+We can quickly produce some descriptive statistics from those data, using the `tbl_summary()`{.R} function from {gtsummary}.
+```{r}
+library(gtsummary)
+get_table_desc_stat <- function(df, variables){
+  df %>% 
+  select(!!variables) %>% 
+  tbl_summary(
+    # by = ,
+    type = all_continuous() ~ "continuous2",
+    statistic = list(
+      all_continuous() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})"),
+      all_categorical() ~ "{n} ({p}%)"),
+    digits = list(
+      all_continuous() ~ 2,
+      all_categorical() ~ 0
+    ),
+    missing_text = "Missing value"
+  ) %>% 
+  modify_header(label ~ "**Variable**") %>% 
+  add_stat_label(
+    label = list(
+      all_continuous() ~ c("Mean (Std)", "Median (IQR)"),
+      all_categorical() ~ "n (%)"
+    )
+  )
+}
+```
+
+
+## Raw data
+
+::: {.panel-tabset}
+
+
+## Children's characteristics
+
+```{r}
+#| code-fold: true
+#| cache: true
+childrens_characteristics <- c("sex", "dbwt", "bfacil", "bfacil3", "restatus")
+
+get_table_desc_stat(df, childrens_characteristics)
+```
+
+
+## Deaths
+
+```{r}
+#| code-fold: true
+#| cache: true
+death_variables <- c("d_restatus", "hospd", "weekdayd", "dthyr", "dthmon",
+                      "dob_yy", "dob_mm", "dob_wk", "aged", "manner")
+
+get_table_desc_stat(df, death_variables)
+```
+
+
+## Mother
+
+```{r}
+#| code-fold: true
+#| cache: true
+mother_variables <- c("mager41", "mbrace", "mracerec", "mar", "meduc")
+get_table_desc_stat(df, mother_variables)
+```
+
+## Father
+```{r}
+#| code-fold: true
+#| cache: true
+father_variables <- c("fagecomb", "fbrace", "fracerec")
+get_table_desc_stat(df, father_variables)
+```
+
+## Pregnancy
+
+```{r}
+#| code-fold: true
+#| cache: true
+pregnancy_variables <- c("lbo", "tbo", "precare_rec", "uprevis", "wtgain",
+                         "cig_1", "cig_2", "cig_3", "cig_rec", 
+                         "dlmp_mm", "dlmp_yy", "estgest", "combgest")
+get_table_desc_stat(df, pregnancy_variables)
+```
+
+## Risk Factor
+
+```{r}
+#| code-fold: true
+#| cache: true
+risk_factor_variables <- c("rf_diab", "rf_gest", "rf_phyp", "rf_ghyp", 
+                           "rf_eclam", "rf_ppterm", "rf_ppoutc", "rf_cesar")
+get_table_desc_stat(df, risk_factor_variables)
+```
+
+
+## Obstetric procedures
+
+```{r}
+#| code-fold: true
+#| cache: true
+obstetric_procedures_variables <- c("op_cerv", "op_tocol", "op_ecvs", "op_ecvf",
+                                    "uop_induc", "uop_tocol", "on_ruptr", 
+                                    "on_abrup", "on_prolg")
+get_table_desc_stat(df, obstetric_procedures_variables)
+```
+
+
+
+## Labor
+
+```{r}
+#| code-fold: true
+#| cache: true
+labor_variables <- 
+  c("ld_induct", "ld_augment", "ld_nvrtx", "ld_steroids", "ld_antibio", 
+    "ld_chorio", "ld_mecon", "ld_fintol", "ld_anesth", "uld_meco", 
+    "uld_precip", "uld_breech", "md_present", "md_route", "md_trial", 
+    "rdmeth_rec", "dmeth_rec", "attend", "apgar5", "dplural")
+get_table_desc_stat(df, labor_variables)
+```
+
+
+
+## Abnormal Conditions and anomalies (newborn)
+
+```{r}
+#| code-fold: true
+#| cache: true
+conditions_newborn_variable <- 
+  c("ab_vent", "ab_vent6", "ab_nicu", "ab_surfac", "ab_antibio", "ab_seiz", 
+    "ab_inj", "ca_anen", "ca_menin", "ca_heart", "ca_hernia", "ca_ompha", 
+    "ca_gastro", "ca_limb", "ca_cleftlp", "ca_cleft", "ca_downs", 
+    "ca_chrom", "ca_hypos")
+get_table_desc_stat(df, conditions_newborn_variable)
+```
+
+
+:::
+
+
+
+## Recoding some variables
+
+Let us recode some variables, based on what was observed on the descriptive statistics table. Some variables are discarded, because they correspond to multiply defined information. For example, the race of the mother is provided through multiple variables: `mbrace` and `mracerec`. The former gives a much finer decomposition, but the number of observation is too limited for some categories.
+
+```{r}
+df <- 
+  df %>% 
+  select(
+    -bfacil, -hospd, -mbrace, -fbrace, -tbo, -ld_nvrtx, -rdmeth_rec, 
+    -ab_seiz, -ab_inj) %>% 
+  filter(!is.na(bfacil3)) %>% 
+  filter(is.na(manner) | manner %in% c("Could not determine", "Natural")) %>% 
+  mutate(
+    d_restatus = fct_recode(
+      d_restatus, 
+      "Other" = "Interstate or Interterritory Nonresidents", 
+      "Other" = "Foreign Residents"
+    ),
+    precare_rec = replace_na(precare_rec, "Unknown or not stated"),
+    cig_rec = replace_na(cig_rec, "Unknown or not stated"),
+    op_cerv = replace_na(op_cerv, "Unknown or not stated"),
+    op_tocol = replace_na(op_tocol, "Unknown or not stated"),
+    op_ecvs = replace_na(op_ecvs, "Unknown or not stated"),
+    op_ecvf = replace_na(op_ecvf, "Unknown or not stated"),
+    uop_tocol = replace_na(uop_tocol, "Unknown or not stated"),
+    on_ruptr = replace_na(on_ruptr, "Unknown or not stated"),
+    on_abrup = replace_na(on_abrup, "Unknown or not stated"),
+    on_prolg = replace_na(on_prolg, "Unknown or not stated"),
+    ld_induct = replace_na(ld_induct, "Unknown or not stated"),
+    ld_augment = replace_na(ld_augment, "Unknown or not stated"),
+    ld_steroids = replace_na(ld_steroids, "Unknown or not stated"),
+    ld_antibio = replace_na(ld_antibio, "Unknown or not stated"),
+    ld_chorio = replace_na(ld_chorio, "Unknown or not stated"),
+    ld_mecon = replace_na(ld_mecon, "Unknown or not stated"),
+    ld_fintol = replace_na(ld_fintol, "Unknown or not stated"),
+    ld_anesth = replace_na(ld_anesth, "Unknown or not stated"),
+    uld_meco = replace_na(uld_meco, "Unknown or not stated"),
+    uld_precip = replace_na(uld_precip, "Unknown or not stated"),
+    uld_breech = replace_na(uld_breech, "Unknown or not stated"),
+    md_present = replace_na(md_present, "Unknown or not stated"),
+    md_route = replace_na(md_route, "Unknown or not stated"),
+    md_trial = replace_na(md_trial, "Unknown or not stated"),
+    dmeth_rec = replace_na(dmeth_rec, "Unknown"),
+    attend = replace_na(attend, "Unknown or not stated"),
+    dplural = fct_recode(
+      dplural,
+      "Quadruplet or higher" = "Quadruplet",
+      "Quadruplet or higher" = "Quintuplet or higher"
+    ),
+    ab_vent = replace_na(ab_vent, "Unknown or not stated"),
+    ab_vent6 = replace_na(ab_vent6, "Unknown or not stated"),
+    ab_nicu = replace_na(ab_nicu, "Unknown or not stated"),
+    ab_surfac = replace_na(ab_surfac, "Unknown or not stated"),
+    ab_antibio = replace_na(ab_antibio, "Unknown or not stated"),
+    ca_anen = replace_na(ca_anen, "Unknown"),
+    ca_menin = replace_na(ca_menin, "Unknown"),
+    ca_heart = replace_na(ca_heart, "Unknown"),
+    ca_hernia = replace_na(ca_hernia, "Unknown"),
+    ca_ompha = replace_na(ca_ompha, "Unknown"),
+    ca_gastro = replace_na(ca_gastro, "Unknown"),
+    ca_limb = replace_na(ca_limb, "Unknown"),
+    ca_cleftlp = replace_na(ca_cleftlp, "Unknown"),
+    ca_cleft = replace_na(ca_cleft, "Unknown"),
+    ca_downs = replace_na(ca_downs, "Unknown"),
+    ca_chrom = replace_na(ca_chrom, "Unknown"),
+    ca_hypos = replace_na(ca_hypos, "Unknown")
+  )
+```
+
+
+Let us also create three dummy variables to state whether the mother smoked during each trimester of her pregnancy.
+
+```{r}
+df <- 
+  df %>% 
+  mutate(
+    cig_1_d = case_when(
+      cig_1 == 0 ~ "No",
+      cig_1 > 0 ~ "True",
+      is.na(cig_1) ~ "Unknown or not stated"
+    ),
+    cig_2_d = case_when(
+      cig_2 == 0 ~ "No",
+      cig_2 > 0 ~ "True",
+      is.na(cig_2) ~ "Unknown or not stated"
+    ),
+    cig_3_d = case_when(
+      cig_3 == 0 ~ "No",
+      cig_3 > 0 ~ "True",
+      is.na(cig_3) ~ "Unknown or not stated"
+    ),
+    cig_1_d = factor(cig_1_d, levels = c("Yes", "No", "Unknown or not stated")),
+    cig_2_d = factor(cig_2_d, levels = c("Yes", "No", "Unknown or not stated")),
+    cig_3_d = factor(cig_3_d, levels = c("Yes", "No", "Unknown or not stated"))
+  )
+
+```
+
+Let us add some labels for these three dummies.
+
+```{r}
+df <- 
+  df %>% 
+  labelled::set_variable_labels(
+    cig_1_d = "Smoked cigarettes 1st Trimester",
+    cig_2_d = "Smoked cigarettes 2nd Trimester",
+    cig_3_d = "Smoked cigarettes 3rd Trimester"
+  )
+```
+
+
+
+And the, let us save the data:
+```{r}
+save(df, file = "../data/df_2013.rda")
+```
+
+
+
+## Grouping according to smoking
+
+Let us provide the same kind descriptive statistics as above, but this time by splitting the data according to whether the mother smokes or not.
+
+```{r}
+get_table_desc_stat_smoke <- function(df, variables){
+  df %>% 
+    select(!!variables, cig_rec) %>% 
+    tbl_summary(
+      by = cig_rec,
+      type = all_continuous() ~ "continuous2",
+      statistic = list(
+        all_continuous() ~ c("{mean} ({sd})", "{median} ({p25}, {p75})"),
+        all_categorical() ~ "{n} ({p}%)"),
+      digits = list(
+        all_continuous() ~ 2,
+        all_categorical() ~ 0
+      ),
+      missing_text = "Missing value"
+    ) %>% 
+    add_p() %>% 
+    add_overall(col_label = "Whole sample") %>% 
+    modify_header(label ~ "**Variable**") %>% 
+    modify_spanning_header(c("stat_1", "stat_2") ~ "**Mother is a smoker**") %>% 
+    add_stat_label(
+      label = list(
+        all_continuous() ~ c("Mean (Std)", "Median (IQR)"),
+        all_categorical() ~ "n (%)"
+      )
+    )
+}
+```
+
+
+
+::: {.panel-tabset}
+
+
+## Children's characteristics
+
+```{r}
+#| code-fold: true
+#| cache: true
+childrens_characteristics <- c("sex", "dbwt", "bfacil3", "restatus")
+
+get_table_desc_stat_smoke(df, childrens_characteristics)
+```
+
+
+## Deaths
+
+```{r}
+#| code-fold: true
+#| cache: true
+death_variables <- c("d_restatus", "weekdayd", "dthyr", "dthmon",
+                      "dob_yy", "dob_mm", "dob_wk", "aged", "manner")
+
+get_table_desc_stat_smoke(df, death_variables)
+```
+
+
+## Mother
+
+```{r}
+#| code-fold: true
+#| cache: true
+mother_variables <- c("mager41", "mracerec", "mar", "meduc")
+get_table_desc_stat_smoke(df, mother_variables)
+```
+
+## Father
+```{r}
+#| code-fold: true
+#| cache: true
+father_variables <- c("fagecomb", "fracerec")
+get_table_desc_stat_smoke(df, father_variables)
+```
+
+## Pregnancy
+
+
+```{r}
+#| code-fold: true
+#| cache: true
+pregnancy_variables <- c("lbo", "precare_rec", "uprevis", "wtgain",
+                         "cig_1", "cig_2", "cig_3", "cig_rec", 
+                         "cig_1_d", "cig_2_d", "cig_3_d",
+                         "dlmp_mm", "dlmp_yy", "estgest", "combgest")
+get_table_desc_stat_smoke(df, pregnancy_variables)
+```
+
+## Risk Factor
+
+```{r}
+#| code-fold: true
+#| cache: true
+risk_factor_variables <- c("rf_diab", "rf_gest", "rf_phyp", "rf_ghyp", 
+                           "rf_eclam", "rf_ppterm", "rf_ppoutc", "rf_cesar")
+get_table_desc_stat_smoke(df, risk_factor_variables)
+```
+
+
+## Obstetric procedures
+
+```{r}
+#| code-fold: true
+#| cache: true
+obstetric_procedures_variables <- c("op_cerv", "op_tocol", "op_ecvs", "op_ecvf",
+                                    "uop_induc", "uop_tocol", "on_ruptr", 
+                                    "on_abrup", "on_prolg")
+get_table_desc_stat_smoke(df, obstetric_procedures_variables)
+```
+
+
+```{r}
+#| code-fold: true
+#| cache: true
+labor_variables <- 
+  c("ld_induct", "ld_augment", "ld_steroids", "ld_antibio", 
+    "ld_chorio", "ld_mecon", "ld_fintol", "ld_anesth", "uld_meco", 
+    "uld_precip", "uld_breech", "md_present", "md_route", "md_trial", 
+    "dmeth_rec", "attend", "apgar5", "dplural")
+get_table_desc_stat_smoke(df, labor_variables)
+```
+
+
+
+## Abnormal Conditions and anomalies (newborn)
+
+```{r}
+#| code-fold: true
+#| cache: true
+conditions_newborn_variable <- 
+  c("ab_vent", "ab_vent6", "ab_nicu", "ab_surfac", "ab_antibio", 
+    "ca_anen", "ca_menin", "ca_heart", "ca_hernia", "ca_ompha", 
+    "ca_gastro", "ca_limb", "ca_cleftlp", "ca_cleft", "ca_downs", 
+    "ca_chrom", "ca_hypos")
+get_table_desc_stat_smoke(df, conditions_newborn_variable)
+```
+
+
+:::
+
+
+:::{.callout-tip}
+
+To-do:
+
+- new variables:
+
+    - 
+    
+Questions:
+
+- What should we do when the father's age is missing: there are about 830,000 records where the information is not provided.
+- A lot of missing values for "Number of Prenatal Visits" (`uprevis`) and Weight Gain (`wtgain`): around ~118,000 and ~191,000, respectively. Do we drop these observations, or this variable?
+
+:::
