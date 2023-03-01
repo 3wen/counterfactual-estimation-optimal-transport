@@ -2,7 +2,7 @@
 
 This online appendix provides R codes to apply the methods presented in [Charpentier, Flachaire, and Gallic (2023)](https://arxiv.org/abs/2301.07755).
 
-> Charpentier, Arthur, Emmanuel Flachaire, and Ewen Gallic. 2023. “Causal Inference with Optimal Transport.” In Optimal Transport Statistics for Economics and Related Topics, edited by Nguyen Ngoc Thach, Vladik Kreinovich, Doan Thanh Ha, and Nguyen Duc Trung. Springer Verlag.
+> Charpentier, Arthur, Flachaire, Emmanuel, and Gallic, Ewen. 2023. “Causal Inference with Optimal Transport.” In Optimal Transport Statistics for Economics and Related Topics, edited by Nguyen Ngoc Thach, Vladik Kreinovich, Doan Thanh Ha, and Nguyen Duc Trung. Springer Verlag.
 
 BibTeX entry:
 
