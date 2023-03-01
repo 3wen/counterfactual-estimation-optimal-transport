@@ -15,6 +15,7 @@ crossref:
 toc: true
 format:
   html:
+    embed-resources: true
     code-fold: false
     code-summary: "Show the R codes"
     number-sections: true
