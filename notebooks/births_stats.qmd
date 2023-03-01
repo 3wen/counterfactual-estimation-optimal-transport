@@ -1378,19 +1378,3 @@ get_table_desc_stat_smoke(df, conditions_newborn_variable)
 
 
 :::
-
-
-:::{.callout-tip}
-
-To-do:
-
-- new variables:
-
-    - 
-    
-Questions:
-
-- What should we do when the father's age is missing: there are about 830,000 records where the information is not provided.
-- A lot of missing values for "Number of Prenatal Visits" (`uprevis`) and Weight Gain (`wtgain`): around ~118,000 and ~191,000, respectively. Do we drop these observations, or this variable?
-
-:::
